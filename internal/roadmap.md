@@ -1570,6 +1570,26 @@ system queries covers `fc-list` (inert with each matplotlib command line;
 `fc-list` at import no longer widens plans, and a pandas recording from
 an empty font cache has no flag outside every test.
 
+*Measured again (2026-11-25, pod, diffcone 7fdedf1; recording in
+`.spike/pandas-2026-11-25/rec`).* Recorded at `bc2fe1b` from an empty font
+cache: 24 239 tests in 1 101 s, nothing flagged outside every test. A plan
+of `e9b71cd02e` (DataFrame reduction signatures) still selects 100 %, but
+through 19 683 `pytest_hook_changed` fallbacks (41 in October), each
+explaining the same select-all with a median of 53 KB, and it took about
+8 hours (15 minutes in October): the report is 1-6 GB, and five such
+plans at once ran out of 256 GB. Every fallback ends as in October, code
+run while pytest collected a test module "can run" a process writer (346
+such symbols, 347 in October), now often one reached by name in
+`asv_bench` (`Hashing.setup_cache`). Two things follow, neither a change of
+selection: `_select_all` keeps every arrival (one fallback per chain, no
+dedup), and the cascade builds a chain for each; once a plan selects
+everything, the rest is explanation. *Next, before the spike of the eight
+writers can be measured at all:* a profiled plan (pod) to find where the
+8 hours go, and a sketch for keeping one fallback per rule and terminal
+(the symbol that ran outside the tests) with a count of the chains left
+out, so a report says why without repeating it. The spike itself
+(`_process_writers` empty) did not finish within budget.
+
 **Measuring.** After each fix, re-plan the 8 replays (`.spike` scripts
 from item 18; about 15 minutes per plan) and list the next pattern behind
 whatever still selects everything. Further patterns get their own entry

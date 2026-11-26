@@ -1564,6 +1564,29 @@ baseline (arrow 2 852 of 4 170, boltons 2 659 of 2 659, flask 1 885 of
 eight hands work to a thread that finishes late or sets up a conftest's
 module fixture beside a process left running.
 
+## pandas on a fresh machine: the font cache and a deep cascade (2026-11-25)
+
+pandas recorded at `bc2fe1b` on a new 32-core pod (`-n 24 -m "not slow
+and not network and not db and not single_cpu"`, 24 239 tests, 999 s) with
+diffcone 0660341 flagged a process no record follows outside every test,
+while `pandas.tests.plotting.frame.test_frame` was imported: matplotlib
+3.11.2 builds its font cache on first use (`fc-list --help`, `fc-list
+--format=%{file}\n`), as on every CI runner. Every evidence plan from that
+recording then failed with `RecursionError` (exit 2): the cascade from the
+flagged import ran past Python's 1 000 frames. With the observers on a
+deep stack (245faac) a docstring-only replay (`bb48902271`) planned, and
+selected everything through 19 650 fallbacks, all from that one import.
+With `fc-list` a machine query (7fdedf1), a recording from an empty
+matplotlib configuration (it wrote `fontlist-v3.11.0.json`) flags nothing
+outside every test (1 101 s). Its plans and their cost: roadmap item 19.
+
+**Evidence corpus** (8 suites, recorded and replayed with 7fdedf1 at the
+commits of the 2026-11-24 run, against that run's 378b2bf reports): 0
+misses, and every repository selects the same (arrow 2 852 of 4 170,
+boltons 2 659 of 2 659, flask 1 885 of 2 232, jinja 2 708 of 4 062,
+marshmallow 1 942 of 3 879, more-itertools 1 398 of 4 628, pluggy 1 095 of
+1 095, typer 6 006 of 6 006).
+
 ## Before 0.6.0: audit round 8 (2026-11-16)
 
 Measured on v0.5.0 (3256a04), round 7's end (bdcc8a0, which plans as
