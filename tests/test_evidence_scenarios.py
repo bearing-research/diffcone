@@ -19,8 +19,10 @@ from pathlib import Path
 import pytest
 
 from diffcone.cli import main
+from diffcone.discovery import DiscoveryOptions
 from diffcone.evidence import EvidenceError, load_store
 from diffcone.testing import (
+    FixtureRepo,
     asv_target,
     reason,
     rules,
@@ -5618,6 +5620,196 @@ def test_a_moved_submodule_selects_everything_in_evidence_mode(repo, roots):
         base, head, [], source_roots=roots, discover_runners=["pytest"], evidence=evidence
     )
     assert selected(plan) == {"tests/test_m.py::test_f", "tests/test_other.py::test_other"}
+
+
+CONFIGURED = {
+    ".gitignore": "__pycache__/\n.diffcone/\n",
+    "diffcone.toml": '[build]\nreads = ["cpp/**"]\n',
+    "cpp/a.cc": "int a;\n",
+    "src/pkg/__init__.py": "",
+    "src/pkg/ops.py": (
+        "import warnings\n\n\ndef f():\n    warnings.warn('old', UserWarning)\n    return 1\n\n\n"
+        "def g():\n    return 2\n"
+    ),
+    "tests/test_ops.py": (
+        "from pkg.ops import f, g\n\n\ndef test_f():\n    assert f() == 1\n\n\n"
+        "def test_g():\n    assert g() == 2\n"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "path, before, after",
+    [
+        ("pytest.ini", "[pytest]\npythonpath = src\n", "filterwarnings = error\n"),
+        ("tox.ini", "[pytest]\npythonpath = src\n", "filterwarnings = error\n"),
+        ("setup.cfg", "[tool:pytest]\npythonpath = src\n", "filterwarnings = error\n"),
+        (
+            "pyproject.toml",
+            "[tool.pytest.ini_options]\npythonpath = ['src']\n",
+            "filterwarnings = ['error']\n",
+        ),
+    ],
+)
+def test_y1_runner_configuration_is_never_set_aside_in_evidence_mode(repo, path, before, after):
+    """Audit round 9, Y1: with ``[build] reads``, a plan from a recording set
+    aside the runner's configuration at the root (static planning never
+    did) and observed it by whoever opened it: pytest read it before any
+    record, so ``filterwarnings = error`` selected nothing though
+    ``test_f`` now fails. The exempt set is static planning's
+    (planner.RunnerConfig): everything is selected, as without the table."""
+    roots = ["src", "tests"]
+    base = repo.commit({**CONFIGURED, path: before})
+    evidence = repo.collect(base, source_roots=roots)
+    head = repo.commit({path: before + after})
+    bench = asv_target("bench_ops.time_g", "pkg.ops.g")
+    plan = repo.plan(
+        base, head, [bench], source_roots=roots, discover_runners=["pytest"], evidence=evidence
+    )
+    assert selected(plan) == {
+        "tests/test_ops.py::test_f",
+        "tests/test_ops.py::test_g",
+        bench.runner_id,
+    }
+    assert plan.build_set_aside == []
+
+
+def test_y3_pytest_configuration_below_the_root_in_evidence_mode(repo):
+    """Audit round 9, Y3, with a recording: ``python/pytest.ini`` (the
+    monorepo shape) is pytest's configuration, never set aside."""
+    files = {
+        ".gitignore": "__pycache__/\n.diffcone/\n",
+        "diffcone.toml": '[build]\nreads = ["cpp/**"]\n',
+        "cpp/a.cc": "int a;\n",
+        "python/pytest.ini": "[pytest]\npythonpath = src\n",
+        "python/src/pkg/__init__.py": "",
+        "python/src/pkg/ops.py": CONFIGURED["src/pkg/ops.py"],
+        "python/tests/test_ops.py": CONFIGURED["tests/test_ops.py"],
+    }
+    roots = ["python/src", "python/tests"]
+    base = repo.commit(files)
+    evidence = repo.collect(base, source_roots=roots, extra=["python/tests"])
+    head = repo.commit(
+        {"python/pytest.ini": files["python/pytest.ini"] + "filterwarnings = error\n"}
+    )
+    plan = repo.plan(
+        base,
+        head,
+        [],
+        source_roots=roots,
+        discover_runners=["pytest"],
+        discovery_options=DiscoveryOptions(runner_args=("python/tests",)),
+        evidence=evidence,
+    )
+    assert selected(plan) == {
+        "python/tests/test_ops.py::test_f",
+        "python/tests/test_ops.py::test_g",
+    }
+    assert plan.build_set_aside == []
+
+
+@pytest.mark.parametrize("table", ['[build]\nreads = ["cpp/**"]\n', ""])
+def test_y2_a_set_aside_submodule_selects_the_tests_that_read_its_files(repo, table):
+    """Audit round 9, Y2: a submodule ``[build] reads`` sets aside was
+    matched only by its gitlink path, which no record holds, so moving a
+    test-data submodule selected nothing though a test read
+    ``testing/data.txt``. Every recorded path under it observes it now.
+    Without the table a moved submodule selects everything."""
+    sub = FixtureRepo(repo.path.parent / "sub")
+    sub.commit({"data.txt": "1\n"})
+    files = {
+        ".gitignore": "__pycache__/\n.diffcone/\n",
+        "cpp/a.cc": "int a;\n",
+        "src/pkg/__init__.py": "",
+        "tests/test_data.py": (
+            "def test_data():\n    with open('testing/data.txt') as f:\n"
+            "        assert f.read() == '1\\n'\n"
+        ),
+        "tests/test_other.py": "def test_other():\n    pass\n",
+    }
+    if table:
+        files["diffcone.toml"] = table
+    repo.commit(files)
+    repo.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub.path), "testing")
+    repo.git("commit", "-q", "-m", "testing")
+    base = repo.git("rev-parse", "HEAD")
+    roots = ["src", "tests=tests"]
+    evidence = repo.collect(source_roots=roots)  # in place: the submodule checked out
+    assert not evidence.tests["tests/test_data.py::test_data"].flags
+    moved = sub.commit({"data.txt": "2\n"})
+    repo.git("update-index", "--cacheinfo", f"160000,{moved},testing")
+    repo.git("commit", "-q", "-m", "testing moved")
+    head = repo.git("rev-parse", "HEAD")
+    bench = asv_target("bench_data.time_data", "tests.test_other.test_other")
+    plan = repo.plan(
+        base, head, [bench], source_roots=roots, discover_runners=["pytest"], evidence=evidence
+    )
+    if table:
+        assert selected(plan) == {"tests/test_data.py::test_data"}
+        assert plan.build_set_aside == ["testing"]
+        assert (
+            "touched testing/data.txt, in the submodule testing"
+            in reason(plan, "tests/test_data.py::test_data", "touched_file").detail
+        )
+    else:
+        assert selected(plan) == {
+            "tests/test_data.py::test_data",
+            "tests/test_other.py::test_other",
+            bench.runner_id,
+        }
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"requirements.txt": "numpy==2.0\n"},
+        {"asv.conf.json": '{"version": 1, "benchmark_dir": "benchmarks", "matrix": {}}\n'},
+        {"csrc/ext.c": "int x;\n"},
+        {"uv.lock": "v2\n"},
+        # The table itself changed: what it sets aside is not known.
+        {"diffcone.toml": '[build]\nreads = ["csrc/**", "r/**"]\n'},
+    ],
+)
+def test_y12_benchmarks_keep_the_static_decision_on_files_outside_the_roots(repo, change):
+    """Audit round 9, Y12: in a plan from a recording, ASV targets kept a
+    static decision planned without the runner files outside the roots
+    (and without the ``[build]`` table's change), so a changed dependency
+    pin, ``asv.conf.json``, lock file or C source selected no benchmark,
+    where the plan without a recording selects every target. A file the
+    table sets aside is still set aside for them."""
+    files = {
+        ".gitignore": "__pycache__/\n.diffcone/\n",
+        "diffcone.toml": '[build]\nreads = ["csrc/**", "requirements.txt", "uv.lock"]\n',
+        "requirements.txt": "numpy==1.0\n",
+        "csrc/ext.c": "int y;\n",
+        "r/src/b.cpp": "int b;\n",
+        "uv.lock": "v1\n",
+        "asv.conf.json": '{"version": 1, "benchmark_dir": "benchmarks"}\n',
+        "lib/__init__.py": "",
+        "lib/m.py": "def f():\n    return 1\n",
+        "tests/__init__.py": "",
+        "tests/test_other.py": "def test_other():\n    pass\n",
+        "benchmarks/__init__.py": "",
+        "benchmarks/bench.py": "from lib.m import f\n\n\ndef time_f():\n    f()\n",
+    }
+    roots = ["lib", "tests=tests", "benchmarks=benchmarks"]
+    base = repo.commit(files)
+    evidence = repo.collect(base, source_roots=roots)
+    head = repo.commit(change)
+    plan = repo.plan(
+        base, head, [], source_roots=roots, discover_runners=["pytest", "asv"], evidence=evidence
+    )
+    assert "bench.time_f" in selected(plan)
+    static = repo.plan(base, head, [], source_roots=roots, discover_runners=["pytest", "asv"])
+    assert selected(static) == {"bench.time_f", "tests/test_other.py::test_other"}
+    # Another component's code is set aside for benchmarks too.
+    other = repo.commit({"r/src/b.cpp": "int c;\n"})
+    plan = repo.plan(
+        head, other, [], source_roots=roots, discover_runners=["pytest", "asv"], evidence=evidence
+    )
+    if "diffcone.toml" not in change:
+        assert "bench.time_f" not in selected(plan)
+        assert "r/src/b.cpp" in plan.build_set_aside
 
 
 BUILD_FILES = {

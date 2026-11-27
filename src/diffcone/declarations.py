@@ -29,13 +29,22 @@ language binding's native code) then no longer selects every target:
     [build]
     reads = ["cpp/**", "testing", ".github/workflows/python.yml"]
 
+A ``reads`` pattern is an fnmatch pattern on repository paths (``*``
+crosses ``/``) in which ``**/`` at the start or after a ``/`` also matches
+no directory at all, as in gitignore (``cpp/**/*.h`` covers
+``cpp/version.h``, ``**/CMakeLists.txt`` the root one), and a pattern
+covers everything under a directory it names (``reads_match``). What is
+never set aside, whatever the patterns, is the runners' configuration
+(``planner.RunnerConfig``).
+
 Edges and ``always_run`` entries only *add* edges or selected targets, so
 they can only widen selection: a wrong one costs a test that runs anyway,
 and none of them can make the plan miss. ``[build] reads`` is the one
 declaration that narrows, and a stale one can hide a miss (a new workflow,
 a directory the build starts reading): the planner reports each path it set
-aside, a pattern matching no path is an analysis error, and a table that
-differs between the two snapshots selects every target.
+aside, an empty list or a pattern matching no path outside the source roots
+is an analysis error, and a table that differs between the two snapshots
+selects every target.
 
 A declaration whose endpoints resolve to nothing, a malformed entry, or a
 file that does not parse, is an analysis error -- a typo that silently
@@ -50,9 +59,11 @@ job skips.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass, field
-from fnmatch import fnmatchcase
+from fnmatch import fnmatchcase, translate
+from functools import cache
 from pathlib import Path
 
 from diffcone.snapshot import PROJECT_FILE, GitError, read_root_file
@@ -154,16 +165,70 @@ def _build(out: Declared, table: object) -> None:
     if not isinstance(patterns, list) or not all(isinstance(p, str) and p for p in patterns):
         out.problems.append(f"{where} reads must be a list of non-empty patterns")
         return
+    if not patterns:
+        # It would set aside every build input and submodule outside the
+        # roots: more likely a list emptied by mistake than a build that
+        # reads nothing there (drop the table to set nothing aside).
+        out.problems.append(
+            f"{where} reads is empty, which would set aside every build file outside the "
+            "source roots: name what the tests' build reads, or drop the table"
+        )
+        return
     out.build_reads = tuple(patterns)
+
+
+# Stands for ``**/`` while fnmatch translates the rest (no path holds it).
+_ANY_DIRS = "\x00"
+
+
+@cache
+def _reads_pattern(pattern: str) -> re.Pattern[str]:
+    """``pattern`` as fnmatch translates it (``*`` crosses ``/``), with each
+    ``**/`` at the start or after a ``/`` (outside a ``[...]`` set) also
+    matching no directory, as in gitignore."""
+    if "**/" not in pattern:
+        return re.compile(translate(pattern))
+    out: list[str] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        if pattern.startswith("**/", i) and (i == 0 or pattern[i - 1] == "/"):
+            out.append(_ANY_DIRS)
+            i += 3
+            continue
+        if pattern[i] == "[":
+            # fnmatch's own scan for the set's end; an unclosed ``[`` is literal.
+            j = i + 1
+            if j < n and pattern[j] == "!":
+                j += 1
+            if j < n and pattern[j] == "]":
+                j += 1
+            while j < n and pattern[j] != "]":
+                j += 1
+            if j < n:
+                out.append(pattern[i : j + 1])
+                i = j + 1
+                continue
+        out.append(pattern[i])
+        i += 1
+    return re.compile(translate("".join(out)).replace(_ANY_DIRS, "(?:.*/)?"))
+
+
+def reads_pattern_matches(name: str, pattern: str) -> bool:
+    """Whether the ``[build] reads`` pattern matches the path ``name``
+    itself (``reads_match`` also takes the directories above it)."""
+    if "**/" not in pattern:
+        return fnmatchcase(name, pattern)
+    return _reads_pattern(pattern).match(name) is not None
 
 
 def reads_match(path: str, patterns: tuple[str, ...]) -> bool:
     """Whether a ``[build] reads`` pattern names ``path`` or a directory
     above it (``testing`` names the submodule and everything under it).
-    Patterns are fnmatch patterns on repository paths: ``*`` crosses ``/``."""
+    Patterns are fnmatch patterns on repository paths (``*`` crosses
+    ``/``) in which ``**/`` may also match no directory (_reads_pattern)."""
     parts = path.split("/")
     prefixes = ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
-    return any(fnmatchcase(p, pattern) for pattern in patterns for p in prefixes)
+    return any(reads_pattern_matches(p, pattern) for pattern in patterns for p in prefixes)
 
 
 def _edge(out: Declared, i: int, entry: object) -> None:
