@@ -419,16 +419,18 @@ import_dirs: dict[str, set[str]] = {}
 # A shared fixture's windows, one per instance: (baseid, name, scope, the
 # node it was set up for: a module's, a class's, a package's; "" for the
 # session's), each with the time its setup started (``start``,
-# ``time.monotonic_ns``). A later instance may reuse what an earlier one
+# ``time.perf_counter_ns``: monotonic, and fine-grained on Windows, where
+# ``monotonic_ns`` ticks every 15.6 ms and a later module's setup could share
+# a tick with an earlier test's end). A later instance may reuse what an earlier one
 # computed (a dict in the conftest, an attribute on a library module, a
 # warm pool; for a session fixture, a cache file another process wrote), so
 # the fold credits a test with what every instance of the fixtures it used
 # ran, in any process, except an instance set up after the test ended (its
 # ``end``), whose work cannot have reached it.
 fixture_windows: dict[tuple[str, str, str, str], dict] = {}
-# This process's clocks as it started (``time.time_ns``, ``time.monotonic_ns``),
+# This process's clocks as it started (``time.time_ns``, ``time.perf_counter_ns``),
 # for the fold to tell whether the processes' monotonic clocks agree.
-CLOCK = (time.time_ns(), time.monotonic_ns())
+CLOCK = (time.time_ns(), time.perf_counter_ns())
 collected: set[str] = set()  # every test collected, parameters folded
 collection_ran = False  # this process collected (an xdist controller does not)
 # Per test (parameters folded): how many of its cases this process collected
@@ -1910,7 +1912,7 @@ def pytest_fixture_setup(fixturedef, request):
     w = fixture_windows.get(key)
     if w is None:
         w = fixture_windows[key] = _window()
-        w["start"] = time.monotonic_ns()
+        w["start"] = time.perf_counter_ns()
     try:
         _unaccounted_children()
     except Exception as exc:
@@ -2027,7 +2029,7 @@ def pytest_runtest_protocol(item, nextitem):
                 if fixturedef.scope != "function":
                     base = (fixturedef.baseid, fixturedef.argname, fixturedef.scope)
                     mine["fixtures"].add(fixture_key(base))
-            mine["end"] = time.monotonic_ns()
+            mine["end"] = time.perf_counter_ns()
             if writer is not None:
                 writer.add(fold_nodeid(item.nodeid), mine)
             _count_case(item.nodeid, 2)

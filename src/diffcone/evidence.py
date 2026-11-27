@@ -344,7 +344,7 @@ class _Raw:
     environment_at_start: dict | None = None
     collect_by: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
     # A shared fixture instance (by process and key) -> what its setup ran,
-    # and when it started (``time.monotonic_ns`` in that process); the
+    # and when it started (``time.perf_counter_ns`` in that process); the
     # fixture definitions each test used, and when it ended in each process
     # that ran it; each process's clocks at its start.
     fixtures: dict[str, tuple[set[str], set[str], set[str], int]] = field(default_factory=dict)
