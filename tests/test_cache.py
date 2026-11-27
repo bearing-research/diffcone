@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from typing import Any
+
+import pytest
 
 from diffcone import cache as cache_mod
 from diffcone import planner as planner_mod
+from diffcone import testing as testing_mod
 from diffcone.cache import IndexCache, index_from_dict, index_to_dict
 from diffcone.cli import main
 from diffcone.report import to_dict
@@ -786,3 +790,56 @@ def test_i8_cached_errors_name_the_revision_as_given(repo, tmp_path):
     cached = to_dict(plan(repo.path, sha, head, None, cache=cache))
     fresh = to_dict(plan(repo.path, sha, head, None))
     assert cached["analysis_errors"] == fresh["analysis_errors"]
+
+
+def _differing_when(monkeypatch, condition) -> None:
+    """``FixtureRepo``'s plans with one decision fewer where ``condition``
+    holds for the call: what an optimisation that changes the plan gives."""
+    real = testing_mod.plan
+
+    def differing(repo_path, base, head, manifest, **kwargs):
+        differs = condition(base, head, kwargs)  # before the plan stores anything
+        result = real(repo_path, base, head, manifest, **kwargs)
+        if differs:
+            result.decisions = result.decisions[1:]
+        return result
+
+    monkeypatch.setattr(testing_mod, "plan", differing)
+
+
+def _ops_scenario(repo):
+    base = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    targets = [
+        py_target("t::test_add", "tests.test_ops.test_add"),
+        py_target("t::test_mul", "tests.test_ops.test_mul"),
+    ]
+    return base, head, targets
+
+
+def test_y24_scenario_plans_are_compared_with_a_plan_without_hubs(repo, monkeypatch):
+    """A rule reading the edges past the hubs differs only with none (Y7):
+    ``FixtureRepo`` plans every scenario without any hub too."""
+    base, head, targets = _ops_scenario(repo)
+    _differing_when(monkeypatch, lambda *_: planner_mod._HUB_MIN == sys.maxsize)
+    with pytest.raises(AssertionError, match="the plan with no hub differs"):
+        repo.plan(base, head, targets)
+
+
+def test_y24_scenario_plans_are_compared_with_a_partially_warm_base(repo, monkeypatch):
+    """A module's resolution that depends on another resolved in the same
+    build differs between a cold build and one where only the changed
+    modules are resolved (Y5): ``FixtureRepo`` plans every scenario with
+    the head's modules cached and the base's changed ones fresh too."""
+    base, head, targets = _ops_scenario(repo)
+
+    def base_partially_warm(base, head, kwargs):
+        cache = kwargs.get("cache")
+        if cache is None:
+            return False
+        probe = IndexCache(cache.directory)
+        return probe.load(base, ["."]) is None and probe.load(head, ["."]) is not None
+
+    _differing_when(monkeypatch, base_partially_warm)
+    with pytest.raises(AssertionError, match="partially warm base cached plan differs"):
+        repo.plan(base, head, targets)

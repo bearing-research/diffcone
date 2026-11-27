@@ -42,7 +42,9 @@ from diffcone.indexer.literals import (
     class_adds_no_state,
     class_declared,
     class_immutables,
+    class_init_delegates,
     class_kept,
+    class_owned,
     class_state,
     class_tables,
     make_evaluator,
@@ -459,6 +461,8 @@ class FirstPass(IndexerState):
                 cscope.adds_no_state = class_adds_no_state(self._class_bindings[scope.name], nodes)
                 cscope.declared = class_declared(nodes)
                 cscope.tables = class_tables(nodes)
+                cscope.owned = class_owned(nodes)
+                cscope.init_delegates = class_init_delegates(nodes)
                 for n in nodes:
                     cscope.base_chains.extend(_flatten_chain(b) for b in n.bases)
                     cscope.base_names.extend(

@@ -533,7 +533,11 @@ Further rules (pre-release audit, round 2):
   as a writer, and a change to the callee changes what it stores (audit
   round 7, U4). A callee that does not resolve
   (`obj.fill(REG)`, a method of a variable) is any in-scope function or
-  method of that name, unless the variable's value is known: an instance of
+  method of that name, unless the variable itself is the receiver
+  (`LOG.info(m)`, `cfg.LOG.info(m)`; not what it holds, `H.registry.push(x)`
+  or `REG[k].run()`, which may be any object: audit round 9, Y17) and its
+  value is known (the writers counted including the any-class writes kept
+  as shared lists, Y6): an instance of
   an in-scope class (that class's method only), a dict, list or set display
   (the container mutators only, recorded directly), or a third-party value:
   a call into a module outside the roots, or a project factory whose every
@@ -644,9 +648,17 @@ Further rules (pre-release audit, round 2):
   attribute stored on it. The trace goes through a class or variable named
   directly or through a module (`Config.mode = m`, `Config.items.append(x)`,
   `setattr(Config, ...)`), `cls`, `type(self)`, `self.__class__`, and
-  `self.x` when no method of the class or of a base binds `x` on the
-  instance (an instance's own attribute, a dataclass field, is no shared
-  state); through an item or attribute of a root (`_CACHE[k]`,
+  `self.x` when the class body binds `x` and an instance of the method's
+  class or of an in-scope subclass may not get one of its own (an
+  instance's own attribute is no shared state: along the instance class's
+  MRO, a class whose `__init__` binds it on `self`, or that declares it a
+  dataclass field or by an annotation alone, comes before any class whose
+  own `__init__` runs no base's, `super().__init__()` or
+  `Base.__init__(self)`; `ClassScope.owned`, `init_delegates`, read in
+  pass 1 for every class, so a module's resolution reads the same of a
+  base of another module whichever was resolved first: audit round 9,
+  Y5. Another method or a classmethod rebinding it, `reset`, gives none:
+  the instances that never call it share the class's object, Y16); through an item or attribute of a root (`_CACHE[k]`,
   `_CACHE.get(k)`, `_CACHE.setdefault(k, [])`, any method call on a root
   except a copy); through a local name bound to any of these, in every
   binding the scope makes of it (an assignment, an unpacked literal, a

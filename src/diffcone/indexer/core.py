@@ -656,6 +656,8 @@ class Indexer(DynamicBounds):
                 adds_no_state=bool(data["adds_no_state"]),
                 declared={str(n) for n in data["declared"]},
                 tables=frozenset(str(n) for n in data["tables"]),
+                owned=frozenset(str(n) for n in data["owned"]),
+                init_delegates=bool(data["init_delegates"]),
                 match_args=tuple(data["match_args"]) if data["match_args"] is not None else None,
                 stateless=tuple(data["stateless"]) if data["stateless"] is not None else None,
                 immutables=(

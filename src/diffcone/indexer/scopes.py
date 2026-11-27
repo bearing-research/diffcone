@@ -92,6 +92,12 @@ class ClassScope:
     # a decorated class or one naming a metaclass that may rebind them
     # (audit round 6, T24). Decided after pass 2.
     immutables: dict[str, tuple[str, ...]] | None = field(default_factory=dict)
+    # The attributes its instances get of their own (literals.class_owned):
+    # read by every module resolving ``self.<attr>`` in a method of the
+    # class or a subclass (audit round 9, Y5, Y16).
+    owned: frozenset[str] = frozenset()
+    # Whether its own ``__init__`` may run a base's (literals.class_init_delegates).
+    init_delegates: bool = False
     bases_state: int = 0  # 0 pending, 1 resolving, 2 resolved
     mro: list[str] | None = None
     in_mro: bool = False  # cycle guard while linearising

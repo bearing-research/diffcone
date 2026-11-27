@@ -108,7 +108,7 @@ import gc
 import heapq
 import re
 from collections import defaultdict, deque
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from fnmatch import fnmatchcase
@@ -823,15 +823,17 @@ def _hub_write(edge: Edge) -> bool:
 
 
 def _shared_writes(
-    union: dict[Edge, tuple[str, ...]],
+    union: dict[Edge, tuple[str, ...]], kept: Collection[str] = ()
 ) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
     """The writers whose ``mutated_by`` edges (the pseudo-node of log
     callbacks aside: _hub_write) go from the same states, with the same
     revisions, as another writer's: writer -> the shared list
-    (_Graph.hubs). Each of a hub writer's writes is in the list."""
+    (_Graph.hubs). Each of a hub writer's writes in the union is in the
+    list. Not a writer of ``kept``, which keeps a hub of its own
+    (_union_edges' ``written``) and its union edges one by one."""
     by_writer: dict[str, list[tuple[str, tuple[str, ...]]]] = defaultdict(list)
     for edge, revs in union.items():
-        if _hub_write(edge):
+        if _hub_write(edge) and edge.target not in kept:
             by_writer[edge.target].append((edge.source, revs))
     groups: dict[frozenset[tuple[str, tuple[str, ...]]], list[str]] = defaultdict(list)
     for writer, states in by_writer.items():
@@ -1489,7 +1491,9 @@ def _members_by_container(symbols: set[str]) -> dict[str, list[str]]:
 
 
 def _log_callback_states(
-    union: dict[Edge, tuple[str, ...]], module_nodes: set[str]
+    union: dict[Edge, tuple[str, ...]],
+    module_nodes: set[str],
+    written: dict[str, frozenset[str]],
 ) -> tuple[dict[Edge, tuple[str, ...]], dict[str, list[tuple[str, tuple[str, ...]]]]]:
     """The variables the callbacks of log calls write depend on the sites
     through one pseudo-node per set of callbacks (model.LOG_CALLBACKS): a
@@ -1501,8 +1505,10 @@ def _log_callback_states(
     rules reading an edge's own ends read the pairs (``log_states``,
     _through_log_callbacks). A module variable's edge stays direct: from a
     REGISTERED site it carries no impact to a module (_propagate), which
-    the pseudo-node, no module, would pass on. Gives back the edges, and
-    each pseudo-node's variables with the revisions of their edges."""
+    the pseudo-node, no module, would pass on; it is in the union unless
+    the site's hub in ``written`` (_union_edges) holds it, in both
+    revisions. Gives back the edges, and each pseudo-node's variables with
+    the revisions of their edges."""
     states: dict[str, list[tuple[str, tuple[str, ...]]]] = defaultdict(list)
     sites: dict[str, list[tuple[str, tuple[str, ...]]]] = defaultdict(list)
     for edge, revs in union.items():
@@ -1522,7 +1528,7 @@ def _log_callback_states(
             revs = union.pop(edge)
             for site, site_revs in sites.get(hub, ()):
                 both = tuple(r for r in revs if r in site_revs)
-                if both and site != state:
+                if both and site != state and state not in written.get(site, ()):
                     direct = Edge(state, site, EdgeKind.REFERENCES, MUTATED_BY)
                     union[direct] = _merged(union.get(direct, ()), both)
         states = {
@@ -1711,14 +1717,20 @@ def plan_from_indexes(
         for s in index.symbols.values()
         if s.kind == SymbolKind.MODULE
     }
-    union, log_states = _log_callback_states(union, module_nodes)
+    union, log_states = _log_callback_states(union, module_nodes, written)
     # What each symbol imports in its body, per revision, read in the same
     # pass (_newly_run_modules).
     imports: dict[str, dict[str, set[str]]] = {"base": defaultdict(set), "head": defaultdict(set)}
-    graph.hubs = hubs = _shared_writes(union)
+    # Only an edge a hub holds is left out of the lists: every union edge
+    # into a writer of ``_shared_writes``, none into one of ``written``,
+    # whose union edges (one an index stores one by one, a module's direct
+    # edge _log_callback_states adds) its hub does not hold (audit round
+    # 9, Y7).
+    graph.hubs = hubs = _shared_writes(union, written)
+    union_hubs = set(hubs)
     hubs.update(_hub_lists(written))
     for edge, revs in union.items():
-        if edge.target in hubs and _hub_write(edge):
+        if edge.target in union_hubs and _hub_write(edge):
             continue  # in the writer's hub
         graph.add(edge, revs)
         if edge.kind is EdgeKind.IMPORTS:
