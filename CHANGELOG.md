@@ -27,8 +27,16 @@ selection rules.
   selecting every test, and the report lists it (`build_reads` in JSON).
   This is the one setting that makes plans select fewer tests, so a stale
   list can hide a failing test: a table that differs between the two
-  snapshots selects every test, and a pattern that covers no path is an
-  analysis error. On Apache Arrow's last 299 commits, a list written from
+  snapshots selects every test, and an empty list or a pattern that covers
+  no path outside the source roots is an analysis error. The runners'
+  configuration is never set aside: pytest's configuration file wherever
+  pytest reads it (below the root, or one given with `-c`), ASV's
+  configuration and every `conftest.py`. In a pattern `*` matches any
+  characters, `/` included, and `**/` also matches no directory
+  (`cpp/**/*.h` covers `cpp/version.h`). `diffcone run` prints the paths
+  set aside and `diffcone report` lists them per job. With a recording, a
+  set-aside file selects the tests that read it, and a set-aside
+  submodule the tests that read any file in it. On Apache Arrow's last 299 commits, a list written from
   pyarrow's build and CI turns 34 of the 192 plans that selected every
   pyarrow test into plans that select none (another binding's native code,
   another component's workflow or packaging); no plan selects more.
@@ -55,19 +63,25 @@ selection rules.
   so a change to it selected every test. On a loaded machine that
   depended on timing: one of two recordings of strata at one commit put
   its cache fetch path there. Work handed off outside every test, such as
-  at import or by a hook, still counts as run outside every test.
+  at import or by a hook, still counts as run outside every test, also
+  when a test started the pool's thread; a pool's own worker threads
+  (`ThreadPoolExecutor`, `multiprocessing.pool.ThreadPool`, anyio and trio
+  worker threads, an event loop's thread) belong to no test.
 - A fixture of module, class or package scope defined once (in a
   `conftest.py`) and set up anew for each module or class is now recorded
-  per instance: each module's tests are credited with what their own
-  instance's setup ran. Before, every instance shared one record, so what
-  one module's setup ran counted for the tests of every module, in every
-  worker. With an autouse fixture, a process one test left running as
+  per instance: a test is credited with what its own instance's setup
+  ran, and with what every instance of the same fixture set up before the
+  test ended ran (a later instance may reuse what an earlier one computed,
+  such as a dict in a `conftest.py`). Before, every instance shared one
+  record, so what one module's setup ran counted for the tests of every
+  module, in every worker, including instances set up after them. With an autouse fixture, a process one test left running as
   the next module started (a warm worker pool) made every test of the
   suite always selected. On strata it did in four recordings of four.
 - An evidence plan no longer fails with an internal error (exit `2`)
   when a change reaches state that hundreds of modules build on one
   another at import. diffcone followed such a chain one module at a time
-  and ran out of Python's stack. On pandas, every evidence plan failed
+  and ran out of Python's stack, also when several plans run at once
+  (`corpus --jobs`). On pandas, every evidence plan failed
   from a recording in which matplotlib built its font cache, which it
   does on a fresh machine such as a CI runner. Plans that worked before
   are unchanged.
@@ -76,7 +90,68 @@ selection rules.
   font cache the first time it is imported on a machine, which on a CI
   runner is every run. A test module importing matplotlib then made every
   change select every test (pandas). `fc-cache` still counts as a process
-  the recording can't follow.
+  the recording can't follow, and so does any machine query pointed at
+  your repository's files: `fc-list` with `FONTCONFIG_FILE` or
+  `FONTCONFIG_PATH` there, `git -C` into a repository your tests keep,
+  `GIT_DIR`, `GIT_CONFIG_GLOBAL` or `HOME` there, or a program of that
+  name in your repository. `ninja` counts as a query only when
+  meson-python's editable loader runs it to rebuild; a test running ninja
+  itself is a process the recording can't follow.
+- Code a test runs in a subinterpreter (`concurrent.interpreters`,
+  `InterpreterPoolExecutor`, 3.12's `_xxsubinterpreters`) now always
+  selects the test, wherever the interpreter was created.
+- The environment a recording is checked against now includes
+  `PYTEST_PLUGINS`, `PYTEST_DISABLE_PLUGIN_AUTOLOAD`, UTF-8 and development
+  mode (`sys.flags`), and every `PYTHONPATH` entry except the source roots
+  diffcone adds itself. Before, a recording made with a plugin named in
+  `PYTEST_PLUGINS`, or an extra directory of the repository on
+  `PYTHONPATH`, was used for a run without it. Recordings made by earlier
+  versions are refused: record again.
+- With a recording, benchmarks and other non-pytest targets keep the plan
+  made without it on changes outside the source roots: a changed
+  dependency list, lock file, `asv.conf.json`, C source or `[build]` table
+  selects them. Before, only the pytest targets were selected.
+- An `[[edges]]` declaration now holds in a plan from a recording for any
+  change that reaches its `to` symbol, a change of its body included, and
+  also when `to` is a test's own code.
+- With a recording, adding or removing a method or class attribute of a
+  class whose objects your code passes to other functions selects the
+  tests that create or use such objects: code outside your project (a
+  `runtime_checkable` `Protocol`'s `isinstance`, `dict(obj)` looking for
+  `keys`) may look the member up without naming it.
+
+### Planning
+
+- An attribute a class body binds to a mutable value (`items = []`) is
+  shared by the instances until something every instance runs rebinds it:
+  only `__init__`, and only when no subclass's `__init__` skips it. Before,
+  any method rebinding `self.items` (a `reset`) made each instance's
+  `items` its own, so a test reading the class's list was missed.
+- A method called on what a module variable or class holds
+  (`H.registry.push()`, `REGISTRY[key].run()`) may be any project method of
+  that name. Before, a class with a library base (a logging handler) made
+  it a library method, and the caller wrote nothing of the project's.
+- A pytest configuration file given with `-c` outside the source roots now
+  selects every test when it changes.
+
+### Running and checking
+
+- `diffcone run` refuses (exit `2`) a working tree that differs from the
+  snapshot the plan analysed even when the plan selects nothing, as
+  documented. With `--evidence`, the check also covers the plan made
+  without the recording that runs when the environment differs from it.
+- `diffcone run` exits `3` when selected tests were not collected (or the
+  selection plugin never loaded), even when other tests failed. Its `-o`
+  plan records them under `run`, and `diffcone report` counts them
+  whatever the exit code.
+
+### CI
+
+- The record action confirms a failure the plan left out by running the
+  whole test files of the missed tests again, in the full run's order. A
+  test that fails only after an earlier test of its file is now a miss,
+  not flaky. One that fails only after a test of another file still
+  passes when run again and counts as flaky.
 
 ### Performance
 
