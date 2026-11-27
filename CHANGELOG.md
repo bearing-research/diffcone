@@ -133,6 +133,14 @@ selection rules.
   it a library method, and the caller wrote nothing of the project's.
 - A pytest configuration file given with `-c` outside the source roots now
   selects every test when it changes.
+- An object of a project class counts as handed to other code however it
+  gets there: through a variable, a container, an attribute, a module
+  variable, a factory's or a fixture's return value, or a parameter passed
+  on, not only as a call's own argument (`f(Impl())`). Before, a change to
+  a method that other code looks up by a name known only at run time
+  (`getattr(obj, name)()`, with `obj = Impl()` first) selected nothing,
+  and with a recording neither did adding or removing a method. Caches
+  are rebuilt (index format 78).
 
 ### Running and checking
 

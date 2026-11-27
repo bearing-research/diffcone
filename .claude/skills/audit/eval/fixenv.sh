@@ -153,7 +153,8 @@ case $name in
   coveragepy)
     pip_ -r requirements/pip.txt -r requirements/pytest.txt -r requirements/light-threads.txt
     pip_ -e '.[toml]'
-    .venv/bin/python igor.py zip_mods >/dev/null ;;
+    igor=igor.py; [ -f tools/igor.py ] && igor=tools/igor.py  # moved to tools/ in 2026
+    .venv/bin/python "$igor" zip_mods >/dev/null ;;
   arrow) pip_ -e . -r requirements/requirements-tests.txt ;;
   dateutil) pip_ -e . -r requirements-dev.txt ;;
   # more-itertools: CI runs unittest; pytest added to collect the same tests
