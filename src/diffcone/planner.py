@@ -111,9 +111,8 @@ from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from fnmatch import fnmatchcase
 from itertools import chain
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TypeVar
 
 from diffcone.cache import IndexCache
@@ -125,7 +124,7 @@ from diffcone.classify import (
     classify,
 )
 from diffcone.declarations import FILENAME as DECLARATION_FILE
-from diffcone.declarations import AlwaysRun, Declaration, reads_match
+from diffcone.declarations import AlwaysRun, Declaration, reads_match, reads_pattern_matches
 from diffcone.declarations import load as load_declarations
 from diffcone.discovery import (
     INCOMPLETE_NOTE_KINDS,
@@ -174,9 +173,9 @@ from diffcone.model import (
 from diffcone.snapshot import (
     ASV_CONFIGS,
     BUILD_SCRIPTS,
-    CONFIG_FILES,
     INDEX,
     PROJECT_BUILD_SCRIPTS,
+    PYTEST_CONFIGS,
     WORKTREE,
     GitError,
     Snapshot,
@@ -523,17 +522,66 @@ def _changed_unanalysed_files(base: SourceIndex, head: SourceIndex) -> list[str]
     )
 
 
+@dataclass(frozen=True)
+class RunnerConfig:
+    """The runners' configuration, which ``[build] reads`` never sets aside
+    whatever its patterns say (``path in config``), in static and evidence
+    planning alike: a pytest configuration file (``PYTEST_CONFIGS``) at the
+    repository root, in a directory above a source root (where pytest looks
+    for one, from the directories it is given upward) or in the rootdir
+    pytest discovery found, the configuration file discovery found
+    (``configfile``: one below the root, a ``-c`` file) at any snapshot the
+    plan reads, ASV's configuration anywhere, and every ``conftest.py``.
+    Names are compared without case, as a case-insensitive file system
+    finds them."""
+
+    dirs: frozenset[str] = frozenset({""})
+    files: frozenset[str] = frozenset()
+
+    @classmethod
+    def of(cls, roots: Iterable[str], discovered: Iterable[DiscoveryResult] = ()) -> RunnerConfig:
+        dirs: set[str] = {""}
+        for root in roots:
+            parts = split_root(root)[0].split("/")
+            dirs.update("/".join(parts[:i]) for i in range(1, len(parts)))
+        files: set[str] = set()
+        for result in discovered:
+            if result.runner != "pytest":
+                continue
+            configfile, rootdir = result.config.get("configfile"), result.config.get("rootdir")
+            if isinstance(configfile, str) and configfile:
+                files.add(configfile.lower())
+            if isinstance(rootdir, str):
+                dirs.add(rootdir.lower())
+        return cls(frozenset(d.lower() for d in dirs), frozenset(files))
+
+    def __contains__(self, path: object) -> bool:
+        return isinstance(path, str) and (
+            path.lower().rpartition("/")[2] in _ALWAYS_COUNTED or self.pytest(path)
+        )
+
+    def pytest(self, path: str) -> bool:
+        """Whether ``path`` may be pytest's configuration file."""
+        lowered = path.lower()
+        directory, _, name = lowered.rpartition("/")
+        return lowered in self.files or (name in _PYTEST_CONFIG_NAMES and directory in self.dirs)
+
+
+_ALWAYS_COUNTED = frozenset(name.lower() for name in ("conftest.py", *ASV_CONFIGS))
+_PYTEST_CONFIG_NAMES = frozenset(name.lower() for name in PYTEST_CONFIGS)
+
+
 def _runner_files_outside_roots(
     repo: Path,
     base: SourceIndex,
     head: SourceIndex,
     roots: list[str],
     reads: tuple[str, ...] | None = None,
+    config: RunnerConfig | None = None,
 ) -> tuple[list[str], list[str]]:
     """Changed files outside the source roots that decide what is installed
-    and how the tests run: the runners' configuration at the repository root
-    (``pyproject.toml``'s pytest table, ``asv.conf.json`` or ``.jsonc``
-    anywhere),
+    and how the tests run: the runners' configuration (``config``:
+    RunnerConfig, by default as the source roots alone place it),
     conftests, anything ``build_input`` names (build scripts, dependency
     declarations and lock files, compiled sources), and submodules (a moved
     gitlink: what changed inside it, vendored sources or test data, is not
@@ -542,6 +590,7 @@ def _runner_files_outside_roots(
     ``[build] reads`` (``reads``), a build input or submodule no pattern
     names is set aside: the second list. Runner configuration and
     conftests are never set aside."""
+    config = config if config is not None else RunnerConfig.of(roots)
     if "" in (split_root(r)[0] for r in roots):
         return [], []
     if base.snapshot.committed:
@@ -560,7 +609,7 @@ def _runner_files_outside_roots(
     for path in sorted(changed):
         if any(path.startswith(d + "/") for d in dirs):
             continue
-        if path in CONFIG_FILES or PurePosixPath(path).name in ("conftest.py", *ASV_CONFIGS):
+        if path in config:
             counted.append(path)
         elif path in gitlinks or build_input(path):
             if reads is None or reads_match(path, reads):
@@ -577,11 +626,14 @@ def _build_reads(
     snapshots when they are the same (None for none), and whether the
     table differs between them, which selects every target (a narrowing
     that changed with the code cannot be trusted for either side). A
-    pattern naming no path of its snapshot is stale: an analysis error.
-    With a source root at the repository's top nothing is outside the
-    roots, so the table changes nothing."""
+    pattern naming no path of its snapshot outside the source roots is
+    stale (or does nothing, the roots being planned as ever): an analysis
+    error, as an empty list is (declarations.parse). With a source root at
+    the repository's top nothing is outside the roots, so the table
+    changes nothing."""
     if "" in (split_root(r)[0] for r in roots):
         return None, False
+    dirs = [split_root(r)[0] for r in roots]
     for revision, index, reads in sides:
         if not reads:
             continue
@@ -590,15 +642,23 @@ def _build_reads(
         except GitError as exc:
             index.errors.append(AnalysisError(revision, DECLARATION_FILE, f"[build] reads: {exc}"))
             continue
-        names = {"/".join(p.split("/")[:i]) for p in paths for i in range(1, p.count("/") + 2)}
+        # Every path and directory outside the roots (the directories above
+        # a root are outside: ``python`` holds ``python/cpp`` too).
+        names = {
+            name
+            for p in paths
+            for name in ("/".join(p.split("/")[:i]) for i in range(1, p.count("/") + 2))
+            if not any(name == d or name.startswith(d + "/") for d in dirs)
+        }
         for pattern in reads:
-            if not any(fnmatchcase(name, pattern) for name in names):
+            if not any(reads_pattern_matches(name, pattern) for name in names):
                 index.errors.append(
                     AnalysisError(
                         revision,
                         DECLARATION_FILE,
-                        f"[build] reads {pattern!r} names no path of this snapshot: a "
-                        "stale pattern would set aside what the build now reads",
+                        f"[build] reads {pattern!r} names no path of this snapshot outside "
+                        "the source roots: a stale pattern would set aside what the build "
+                        "now reads",
                     )
                 )
     (_, _, base_reads), (_, _, head_reads) = sides
@@ -3266,6 +3326,8 @@ def plan(
     # repositories); the base index still comes from the cache.
     base_target_ids: set[str] | None = None
     base_lifecycle: dict[tuple[str, str], tuple[str, ...]] = {}
+    # Discovery at every snapshot read, for where pytest's configuration is.
+    configured: list[DiscoveryResult] = []
     if runners:
         base_commit = _cacheable_commit(repo_path, base) if discovery_cache is not None else None
         base_target_ids = set()
@@ -3282,6 +3344,7 @@ def plan(
                 result = discover(runner, base_snapshot, base_index, options)
                 if base_commit is not None and discovery_cache is not None:
                     discovery_cache.store(result, base_commit, roots, options)
+            configured.append(result)
             base_target_ids |= {target.runner_id for target in result.targets}
             for target in result.targets:
                 base_lifecycle[(target.runner, target.runner_id)] = target.lifecycle_dependencies
@@ -3317,6 +3380,7 @@ def plan(
     lifecycle_changes = diff_lifecycles(base_lifecycle, head_lifecycle)
     discovered = _with_base_lifecycle(discovered, base_lifecycle)
     _check_always_run_runners(always_from, manifest, discovered)
+    configured += discovered
     if evidence is not None:
         from diffcone.evidence_plan import plan_with_evidence
 
@@ -3348,6 +3412,16 @@ def plan(
         ):
             # The recording's table too: what changed since it is planned.
             build_reads, reads_changed = None, True
+        if at_c is not None:
+            configured.append(at_c)
+        config = RunnerConfig.of(roots, configured)
+        # What static planning counts, for the targets of other runners,
+        # which keep their static decision.
+        runner_files, set_aside = _runner_files_outside_roots(
+            repo_path, base_index, head_index, roots, build_reads, config
+        )
+        if reads_changed:
+            runner_files.append(DECLARATION_FILE)
         since_c: LifecycleChanges = {}
         if at_c is not None:
             since_c = _since_recording(evidence, at_c, base_index, base_lifecycle, head_lifecycle)
@@ -3366,10 +3440,18 @@ def plan(
             lifecycle_since_recording=since_c,
             build_reads=build_reads,
             build_reads_changed=reads_changed,
+            runner_config=config,
+            runner_files=runner_files,
+            runner_files_set_aside=set_aside,
         )
     else:
         runner_files, set_aside = _runner_files_outside_roots(
-            repo_path, base_index, head_index, roots, build_reads
+            repo_path,
+            base_index,
+            head_index,
+            roots,
+            build_reads,
+            RunnerConfig.of(roots, configured),
         )
         if reads_changed:
             runner_files.append(DECLARATION_FILE)

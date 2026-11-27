@@ -2960,8 +2960,11 @@ job's selected share. `collect` still runs them: in the CI setups its run
 is also the full test run of a push.
 
 `[build] reads` (roadmap item 24, shipped) names the paths outside the
-source roots that the tests' build and CI read, as `fnmatch` patterns on
-repository paths (`*` crosses `/`) that also cover everything under a
+source roots that the tests' build, CI and test run read, as `fnmatch`
+patterns on repository paths (`*` crosses `/`) in which `**/` at the start
+or after a `/` also matches no directory, as in gitignore
+(`declarations.reads_pattern_matches`; audit round 9, Y4: `cpp/**/*.h`
+left `cpp/version.h` out), and that also cover everything under a
 directory they name (`declarations.reads_match`). The analysis cannot see
 which directories a build reads (Apache Arrow's `python/CMakeLists.txt`
 finds the C++ library through `ARROW_HOME` or CMake packages, not paths)
@@ -2970,18 +2973,49 @@ table, a changed build input (`build_input`) or submodule outside the
 roots that no pattern covers is set aside by `_runner_files_outside_roots`
 (the second list it returns): it adds no `unanalysed_file_changed`
 fallback, and the plan carries it in `Plan.build_set_aside`, reported as
-`build_reads.set_aside` and in the text report. Runner configuration at the
-root (`CONFIG_FILES`), conftests and ASV configuration are never set aside.
+`build_reads.set_aside` and in the text report. The class is every
+`build_input`, so it holds more than build files: `.env`, test-data
+submodules, the checker configurations pytest plugins run (`mypy.ini`,
+`.flake8`), CI files; the user docs say `reads` must name what the test
+run reads too (Y23). The runners' configuration is never set aside, and
+`planner.RunnerConfig` is the one definition static and evidence planning
+share (Y1, Y3): a pytest configuration file name (`PYTEST_CONFIGS`) at the
+root, in a directory above a source root (pytest looks for one from the
+directories it is given upward) or in the rootdir discovery found, the
+`configfile` pytest discovery reports at the base, the head and (in
+evidence mode) the recording (one below the root, a `-c` file of any
+name), ASV's configuration anywhere, and every conftest. Names compare
+without case. A `-c` file that is no `build_input` counts as a runner file
+with or without the table (before round 9 it counted nowhere).
+
 In evidence mode a set-aside path is an ordinary changed file
-(`_Observers._set_aside`): the tests whose records opened or listed it are
-selected. It is the one declaration that narrows, so it is guarded
+(`_Observers._set_aside`, which exempts `RunnerConfig` as the static rule
+does): the tests whose records opened or listed it are selected; a
+set-aside submodule is observed through every recorded path under it
+(`_Observers._under`: opened, listed or scanned, by a test, at import or
+collection, or code run inside a test window), in `_file`,
+`_file_readers` and the decision's touched check (`_Observers.trees`; Y2:
+its gitlink path is in no record). pytest's configuration file anywhere
+(`RunnerConfig.pytest`) selects every test there, as a build input does:
+pytest reads it before any record. The targets of other runners keep the
+static decision of base -> head, planned with the same runner files and
+`diffcone.toml` counted when the table changed (`plan_with_evidence`'s
+`runner_files`; Y12: without them a changed `requirements.txt` or
+`asv.conf.json` selected no benchmark), and what that plan set aside joins
+`build_set_aside`.
+
+It is the one declaration that narrows, so it is guarded
 (`planner._build_reads`): a table that differs between base and head (and,
 in evidence mode, the recording's commit) selects every target, the static
-planner by counting `diffcone.toml` as a changed runner file; a pattern
-that covers no path of its snapshot (`snapshot.all_paths`: the commit's
-tree, the index, or the index plus untracked files) is an analysis error;
-and with a root at the repository's top the table changes nothing, since
-nothing is outside the roots.
+planner by counting `diffcone.toml` as a changed runner file; an empty
+list is an analysis error (`declarations.parse`: it would set aside every
+build input outside the roots), and so is a pattern that covers no path of
+its snapshot outside the roots (`snapshot.all_paths`: the commit's tree,
+the index, or the index plus untracked files; a root's own directory and
+everything under it are inside, the directories above it outside), which
+catches a stale pattern and one naming only paths inside the roots, which
+`reads` never changes (Y23); and with a root at the repository's top the
+table changes nothing, since nothing is outside the roots.
 
 `[index] exclude` (audit E29) is a list of `fnmatch` patterns on repository
 paths whose `.py` files the snapshot reader keeps out of the analysis:

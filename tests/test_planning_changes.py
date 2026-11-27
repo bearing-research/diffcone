@@ -18,6 +18,8 @@ import sys
 
 import pytest
 
+from diffcone.declarations import reads_match
+from diffcone.discovery import DiscoveryOptions
 from diffcone.indexer import build_index
 from diffcone.manifest import ManifestError, Target, parse_manifest
 from diffcone.model import SnapshotInfo
@@ -1175,6 +1177,122 @@ def test_build_reads_changes_nothing_with_the_repository_as_a_root(repo):
     plan = repo.plan(base, head, TARGETS, source_roots=["src", "."])
     assert selected(plan) == EVERYTHING
     assert plan.build_set_aside == []
+
+
+MONOREPO = {
+    "cpp/lib.c": "int f(void) { return 1; }\n",
+    "r/src/b.cpp": "int b;\n",
+    "config/pytest-ci.cfg": "[pytest]\npythonpath = src\n",
+    "python/pytest.ini": "[pytest]\npythonpath = src\n",
+    "python/src/pkg/__init__.py": "",
+    "python/src/pkg/ops.py": "def f():\n    return 1\n",
+    "python/tests/test_ops.py": "from pkg.ops import f\n\n\ndef test_f():\n    assert f() == 1\n",
+    "python/benchmarks/bench_ops.py": "from pkg.ops import f\n\n\ndef time_f():\n    f()\n",
+    "diffcone.toml": '[build]\nreads = ["cpp/**"]\n',
+}
+MONOREPO_ROOTS = ["python/src", "python/tests=tests", "python/benchmarks=benchmarks"]
+MONOREPO_BENCH = asv_target("bench_ops.time_f", "benchmarks.bench_ops.time_f")
+
+
+@pytest.mark.parametrize(
+    "args, path",
+    [
+        # pytest's configuration file below the root, where discovery finds it
+        ((), "python/pytest.ini"),
+        (("python/tests",), "python/pytest.ini"),
+        # one named by ``-c``, of any name
+        (("-c", "config/pytest-ci.cfg", "python/tests"), "config/pytest-ci.cfg"),
+    ],
+)
+def test_y3_pytest_configuration_anywhere_is_never_set_aside(repo, args, path):
+    """Audit round 9, Y3: ``[build] reads`` set aside pytest's
+    configuration below the repository root (only root ``CONFIG_FILES``
+    were exempt), so ``filterwarnings = error`` added there selected
+    nothing; a ``-c`` file outside the roots selected nothing even without
+    the table. Without discovery (``()``, a manifest) a configuration file
+    in a directory above a source root counts, as pytest looks there."""
+    base = repo.commit(MONOREPO)
+    head = repo.commit({path: "[pytest]\npythonpath = src\nfilterwarnings = error\n"})
+    runners = {
+        "discover_runners": ["pytest"],
+        "discovery_options": DiscoveryOptions(runner_args=args),
+    }
+    plan = repo.plan(base, head, [MONOREPO_BENCH], MONOREPO_ROOTS, **(runners if args else {}))
+    expected = {"bench_ops.time_f"} | ({"python/tests/test_ops.py::test_f"} if args else set())
+    assert selected(plan) == expected
+    assert plan.build_set_aside == []
+    assert path in reason(plan, "bench_ops.time_f", "unanalysed_file_changed").detail
+    # Another component's native code is still set aside.
+    other = repo.commit({"r/src/b.cpp": "int c;\n"})
+    plan = repo.plan(head, other, [MONOREPO_BENCH], MONOREPO_ROOTS, **(runners if args else {}))
+    assert selected(plan) == set()
+    assert plan.build_set_aside == ["r/src/b.cpp"]
+
+
+@pytest.mark.parametrize(
+    "pattern, path",
+    [("cpp/**/*.h", "cpp/version.h"), ("**/CMakeLists.txt", "CMakeLists.txt")],
+)
+def test_y4_double_star_slash_also_matches_no_directory(repo, pattern, path):
+    """Audit round 9, Y4: ``reads`` patterns were plain fnmatch, whose
+    ``**/`` needs a directory, so ``cpp/**/*.h`` set aside
+    ``cpp/version.h`` and ``**/CMakeLists.txt`` the root one; a nested match
+    passed the stale-pattern guard. As in gitignore, ``**/`` may match no
+    directory now. Widening what a pattern covers only sets less aside."""
+    files = {
+        **TREE,
+        **OUTSIDE,
+        "cpp/version.h": '#define VERSION "1.0"\n',
+        "cpp/src/a.h": "int a(void);\n",
+        "CMakeLists.txt": "project(x)\n",
+        "cpp/src/CMakeLists.txt": "add_library(a)\n",
+        "diffcone.toml": f'[build]\nreads = ["{pattern}"]\n',
+    }
+    base = repo.commit(files)
+    head = repo.commit({path: files[path] + "// changed\n"})
+    plan = repo.plan(base, head, TARGETS, source_roots=SPLIT_ROOTS)
+    assert selected(plan) == EVERYTHING
+    assert plan.build_set_aside == []
+    # A path no pattern covers is still set aside.
+    other = repo.commit({"r/src/b.cpp": "int c;\n"})
+    plan = repo.plan(head, other, TARGETS, source_roots=SPLIT_ROOTS)
+    assert selected(plan) == set() and plan.build_set_aside == ["r/src/b.cpp"]
+
+
+def test_y4_reads_match_rules():
+    patterns = ("cpp/**/*.h",)
+    assert reads_match("cpp/version.h", patterns)
+    assert reads_match("cpp/a/b/c.h", patterns)
+    assert not reads_match("cppx/version.h", patterns)
+    assert not reads_match("cpp/version.cc", patterns)
+    assert reads_match("x/y/CMakeLists.txt", ("**/CMakeLists.txt",))
+    assert reads_match("a/b", ("a/**/b",))
+    # ``**`` not followed by ``/`` at a segment's start is fnmatch's ``*``.
+    assert not reads_match("ab", ("a**/b",))
+    assert reads_match("ax/b", ("a**/b",))
+    # A pattern still covers everything under a directory it names.
+    assert reads_match("testing/data/x.txt", ("testing",))
+
+
+@pytest.mark.parametrize(
+    "table, message",
+    [
+        ("[build]\nreads = []\n", "reads is empty"),
+        # Only paths inside the roots, which are planned as ever.
+        ('[build]\nreads = ["src/**"]\n', "'src/**' names no path of this snapshot outside"),
+        ('[build]\nreads = ["cpp/**", "tests/**"]\n', "'tests/**' names no path"),
+    ],
+)
+def test_y23_reads_naming_nothing_outside_the_roots_is_an_analysis_error(repo, table, message):
+    """Audit round 9, Y23: ``reads = []`` set aside every build input
+    outside the roots, and a pattern naming only paths inside the roots
+    passed the stale guard while setting aside everything it was meant to
+    cover. Both are analysis errors now."""
+    _, base = _reads_repo(repo, table=table)
+    head = _commit_files(repo, {"cpp/src/a.cc": "int f;\n"})
+    plan = repo.plan(base, head, TARGETS, source_roots=SPLIT_ROOTS)
+    assert plan.degraded and selected(plan) == EVERYTHING
+    assert any(message in e.message for e in plan.errors)
 
 
 def test_s9_a_changed_build_script_selects_everything(repo):

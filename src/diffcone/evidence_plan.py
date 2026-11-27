@@ -88,12 +88,16 @@ observed by"), and a test is selected when its record meets E:
   code that ran then is followed as if it had changed. Everything when it
   was touched outside every test, import and test module (a hook), or is
   compiled source, build, dependency or pytest
-  configuration (``build_input``), or a ``conftest.py`` outside the
+  configuration (``build_input``, and pytest's configuration file wherever
+  it is: planner.RunnerConfig), or a ``conftest.py`` outside the
   roots, or a ``.py`` file the index does not read (outside the roots, or
   ``[index] exclude``d) whose code ran inside a test
   (``Evidence.test_window_code``; for an older store, any ``.py`` file a
   test touched: ``unindexed_import``), since later tests use the module
-  from ``sys.modules`` without running it. A Python source file is data
+  from ``sys.modules`` without running it. With ``[build] reads``, a
+  build input or submodule outside the roots no pattern covers (and no
+  runner configuration) is an ordinary file, and a submodule's are
+  the recorded paths under it (``_under``). A Python source file is data
   to the tests that opened it as a file (``inspect.getsource``) too; a
   module's file selects everything only when it is a build script as
   static planning judges it
@@ -211,7 +215,9 @@ literal table bounds to no test module only once code that may change the
 table ran (``table_getters``, guarded by those writers).
 
 Targets of other runners, which have no evidence, keep their static
-decision. A pytest target with no record (new, or never run) is selected.
+decision, the plan of base -> head without a recording (with the runner
+files outside the roots and a changed ``[build]`` table). A pytest target
+with no record (new, or never run) is selected.
 """
 
 from __future__ import annotations
@@ -306,6 +312,7 @@ from diffcone.planner import (
     Plan,
     Reason,
     Rule,
+    RunnerConfig,
     Seeds,
     StepKind,
     _body_imports,
@@ -494,6 +501,14 @@ def _ancestors(path: str) -> list[str]:
         out.append(path)
     out.append("")
     return out
+
+
+def _under_prefix(evidence: Evidence, paths: Iterable[str], tree: str) -> str | None:
+    """The first of ``paths`` under the directory ``tree`` (in any spelling
+    when the recording's file system folds case), or None."""
+    fold = str.casefold if evidence.case_insensitive else str
+    prefix = fold(tree + "/")
+    return min((p for p in paths if fold(p).startswith(prefix)), default=None)
 
 
 def _scanned(path: str) -> str:
@@ -1003,8 +1018,13 @@ class _Observers:
         # ``[build] reads`` (plan_with_evidence): a build input or submodule
         # outside the roots that no pattern names is an ordinary file here,
         # observed by whoever read it; such paths are kept in ``set_aside``.
+        # The runners' configuration is never set aside (``runner_config``,
+        # the one definition static planning uses too).
         self.build_reads: tuple[str, ...] | None = None
+        self.runner_config = RunnerConfig()
         self.set_aside: set[str] = set()
+        # The submodules set aside, observed through the files under them.
+        self.trees: set[str] = set()
         # Every submodule of either index (``_file`` asks only about changed
         # paths), and the changed ones outside the roots (plan_with_evidence).
         self.gitlinks: set[str] = {
@@ -3615,10 +3635,12 @@ class _Observers:
         """Whether ``path``, changed outside the source roots, is a build
         input or submodule ``[build] reads`` names nothing of: then it is
         not the tests' build's, and is read as any other file (and kept in
-        ``set_aside`` for the report)."""
+        ``set_aside`` for the report). The runners' configuration
+        (planner.RunnerConfig) never is, as in static planning."""
         if (
             self.build_reads is None
             or path not in self.outside
+            or path in self.runner_config
             or reads_match(path, self.build_reads)
             or not (build_input(path) or path in self.gitlinks)
         ):
@@ -3633,9 +3655,17 @@ class _Observers:
         by whoever listed a directory above it. Everything is selected for a
         build input, which for a module's file is a build script as static
         planning judges it (planner.is_build_script): an ordinary
-        ``pkg/build.py`` is imported like any module."""
+        ``pkg/build.py`` is imported like any module; and for pytest's
+        configuration file wherever it is (RunnerConfig.pytest: a ``-c``
+        file of any name), which pytest reads before any record starts.
+        A submodule set aside is observed through every file under it a
+        test touched (``_under``)."""
         if source or not self._set_aside(path):
-            if is_build_script(path, self.project_dirs) if source else build_input(path):
+            if (
+                is_build_script(path, self.project_dirs)
+                if source
+                else build_input(path) or self.runner_config.pytest(path)
+            ):
                 self._select_all(
                     Rule.UNOBSERVED_FILE,
                     f"{path} {what}: compiled source, build, dependency or pytest configuration, "
@@ -3657,6 +3687,9 @@ class _Observers:
             # A name seen: a directory above it listed, or the path itself
             # stat'ed (a source file's stat is recorded as a name seen).
             observed += [(d, self.evidence.import_dirs) for d in _ancestors(path)]
+        # A submodule set aside: any of its files read, or directory listed.
+        under = self._under(path)
+        observed += [(u, where) for u in under for where in self._import_records]
         for seen, where_seen in observed:
             for module in sorted(self.evidence.seen_by(where_seen, seen)):
                 where = seen or "the checkout root"
@@ -3681,8 +3714,8 @@ class _Observers:
                         module,
                         f"{path} {what}, and {where} was touched while {module} was imported",
                     )
-        self._file_readers(path, what, names=names)
-        if not source and self._imported_in_a_test(path):
+        self._file_readers(path, what, names=names, under=under)
+        if not source and self._imported_in_a_test(path, under):
             # The first test to import it ran its code, and its record holds
             # the file; every later test may use the module, or what it
             # built, from ``sys.modules`` without touching the file, and
@@ -3694,7 +3727,28 @@ class _Observers:
             )
         self.files[path] = (what, names)
 
-    def _file_readers(self, path: str, what: str, *, names: bool) -> None:
+    @property
+    def _import_records(self) -> tuple[dict[str, frozenset[str]], ...]:
+        return (self.evidence.import_paths, self.evidence.import_dirs)
+
+    def _under(self, path: str) -> list[str]:
+        """For a submodule ``[build] reads`` set aside, every recorded path
+        under it (opened, stat'ed, listed or scanned, by a test or outside
+        every test): the diff shows only its new commit, so any file in it
+        may have changed. Kept in ``trees`` for the decisions. Empty for
+        anything else."""
+        if path not in self.gitlinks or path not in self.set_aside:
+            return []
+        ev = self.evidence
+        fold = str.casefold if ev.case_insensitive else str
+        prefix = fold(path + "/")
+        recorded = {*ev.paths, *ev.import_paths, *ev.import_dirs, *(ev.test_window_code or ())}
+        self.trees.add(path)
+        return sorted(p for p in recorded if fold(p).startswith(prefix))
+
+    def _file_readers(
+        self, path: str, what: str, *, names: bool, under: Iterable[str] = ()
+    ) -> None:
         """The code a test that touched ``path`` ran (opened or stat'ed it,
         scanned or, for ``names``, listed a directory above it): what it read
         there may be kept in state a later test reads without touching the
@@ -3709,10 +3763,13 @@ class _Observers:
         a traceback formats every source file it passes through, and taking
         each for data selects every test of a project that logs one. What
         project code keeps of such lines (a formatted traceback, a
-        function's source) is not followed (docs/limitations.md)."""
+        function's source) is not followed (docs/limitations.md). ``under``:
+        the recorded paths under a submodule set aside (``_under``), each
+        touched or listed."""
         ev = self.evidence
-        opened = ev.path_ids([path])
-        scanned = ev.path_ids([_scanned(path)])
+        inside = ev.path_ids(u for u in under if not u.endswith(SHOWN))
+        opened = ev.path_ids([path]) | inside
+        scanned = ev.path_ids([_scanned(path)]) | inside
         listed = ev.path_ids(_ancestors(path)) if names else frozenset()
         for test, record in sorted(ev.tests.items()):
             if not (record.paths & opened or record.dirs & (scanned | listed)):
@@ -3730,16 +3787,20 @@ class _Observers:
                 ):
                     self._file_seeds[sid] = why
 
-    def _imported_in_a_test(self, path: str) -> bool:
-        """Whether code of ``path``, a file the index does not read, ran
-        inside a test window at C (``Evidence.test_window_code``); for a store
-        that did not record that, whether a test touched the ``.py`` file."""
+    def _imported_in_a_test(self, path: str, under: Iterable[str] = ()) -> bool:
+        """Whether code of ``path``, a file the index does not read, or of a
+        file under a submodule set aside (``under``), ran inside a test
+        window at C (``Evidence.test_window_code``); for a store that did
+        not record that, whether a test touched the ``.py`` file."""
         ev = self.evidence
+        files = [path, *under]
         if ev.test_window_code is not None:
-            return ev.has(set(ev.test_window_code), path)
-        if not path.endswith(".py"):
+            code = set(ev.test_window_code)
+            return any(ev.has(code, f) for f in files)
+        py = [f for f in files if f.endswith(".py")]
+        if not py:
             return False
-        ids = ev.path_ids([path, path + SHOWN])
+        ids = ev.path_ids([*py, *(f + SHOWN for f in py)])
         return any(ids & record.paths for record in ev.tests.values())
 
 
@@ -3780,10 +3841,19 @@ def plan_with_evidence(
     lifecycle_since_recording: LifecycleChanges | None = None,
     build_reads: tuple[str, ...] | None = None,
     build_reads_changed: bool = False,
+    runner_config: RunnerConfig | None = None,
+    runner_files: Iterable[str] = (),
+    runner_files_set_aside: Iterable[str] = (),
 ) -> Plan:
     """``build_reads``: ``diffcone.toml``'s ``[build] reads``, the same at
     the recording, the base and the head; ``build_reads_changed``: it is
     not, which selects every target (planner._build_reads).
+    ``runner_config``: the runners' configuration, never set aside
+    (planner.RunnerConfig; by default as the roots place it).
+    ``runner_files``: what static planning of base -> head counts outside
+    the roots (planner._runner_files_outside_roots, with ``diffcone.toml``
+    when the table changed), and ``runner_files_set_aside`` what it set
+    aside: the targets of other runners keep that static decision.
     ``lifecycle_changes``: the discovered targets' lifecycle dependencies
     that moved between base and head, for targets of other runners, which
     keep their static decision; ``lifecycle_since_recording``: those of the
@@ -3839,6 +3909,9 @@ def plan_with_evidence(
             )
             obs.gitlinks |= gitlinks
             obs.build_reads = build_reads
+            obs.runner_config = (
+                runner_config if runner_config is not None else RunnerConfig.of(source_roots or [])
+            )
         _deep(obs.run)
         observed.append(obs)
         fallbacks += obs.fallbacks
@@ -3876,7 +3949,11 @@ def plan_with_evidence(
             target_fallbacks[fb.target or ""].append(Reason(fb.rule, fb.detail))
 
     static_other: dict[str, Decision] = {}
+    static_set_aside: list[str] = []
     if any(t.runner != "pytest" for t in targets):
+        # The static plan of base -> head, as ``plan`` makes it without a
+        # recording: with the runner files outside the roots and the
+        # ``[build]`` table's change (audit round 9, Y12).
         full = plan_from_indexes(
             base,
             head,
@@ -3886,9 +3963,11 @@ def plan_with_evidence(
             discovered=discovered,
             declarations=declared,
             base_target_ids=base_target_ids,
+            runner_files=runner_files,
             lifecycle_changes=lifecycle_changes,
         )
         static_other = {d.target.node_id: d for d in full.decisions if d.target.runner != "pytest"}
+        static_set_aside = list(runner_files_set_aside)
 
     # What each pair's E and guarded readers are in the evidence's symbol
     # table, to meet a record's indices without spelling its symbols out.
@@ -3935,7 +4014,7 @@ def plan_with_evidence(
     )
     plan.evidence = _summary(evidence, pairs, observed, changes)
     plan.build_reads = build_reads
-    plan.build_set_aside = sorted(set().union(*(obs.set_aside for obs in observed)))
+    plan.build_set_aside = sorted(set(static_set_aside).union(*(obs.set_aside for obs in observed)))
     return plan
 
 
@@ -4057,6 +4136,11 @@ def _evidence_decision(
                         how = f"stat'ed {path}"
                     elif dirs:
                         how = f"listed {dirs[0] or 'the checkout root'}"
+                if how is None and path in obs.trees:
+                    # A submodule set aside: any of its files the test read.
+                    inside = _under_prefix(evidence, touched | listed, path)
+                    if inside is not None:
+                        how = f"touched {inside}, in the submodule {path}"
                 if how is not None:
                     reasons.append(
                         Reason(
