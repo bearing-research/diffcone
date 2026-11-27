@@ -59,7 +59,14 @@ observed by"), and a test is selected when its record meets E:
   ``TypedDict`` base; an ancestor's ``__init_subclass__``; a body that is
   a lookup site itself), and what a metaclass's ``__prepare__``,
   ``__new__`` and ``__init__`` and the ancestors' ``__init_subclass__``
-  write is followed (``_creation_code``; audit round 8, V4);
+  write is followed (``_creation_code``; audit round 8, V4); a member
+  added to or deleted from a class handed to other code
+  (``SourceIndex.escaped_classes``, for it or a subclass), or a class
+  attribute its body binds or no longer binds, reaches the code that
+  can hold an instance, as other code may look the member up by no name
+  the index sees (a ``Protocol``'s ``isinstance``, ``dict(obj)`` looking
+  for ``keys``): the readers of the class and of its subclasses and the
+  members of its hierarchy (``_escaped_member``; audit round 9, Y15);
 * an added or deleted name: its readers, the unbounded lookup and
   reflection sites that can see the namespace, and for a deletion the
   modules importing it (their import now fails); an added or deleted
@@ -159,6 +166,12 @@ the writer names on it (``Settings.debug = v`` read as
 ``self.settings.debug``: V6) are followed as readers. A written class's
 own top-level code is no reader: its body ran when it was defined. Each is
 followed once per way it can be (V15).
+
+A dependency the project declares (``[[edges]]``: ``from`` depends on
+``to``) makes ``from`` a reader of ``to`` for any change: once ``to`` or a
+member of it is in E, can run a member of E, or is state written by code
+that can, ``from`` and its members are followed as readers, a test's own
+code included (``_declared``; audit round 9, Y13).
 
 Neither rule counts a lazily initialised constant's own writer as a reader
 of its fill (``SourceIndex.lazy_constants``: ``global V; if V is None: V =
@@ -584,20 +597,32 @@ def _class_graph(
 # beyond Python's default limit of 1000 frames, and every plan failed.
 # ``_deep`` runs it on a thread with a larger stack: it explores in the
 # same order, so plans and their reasons stay as they were. The sizes are
-# tried in turn (Windows' CPython takes only less than 256 MB), and the
-# recursion limit is raised in proportion to the one taken: about 2 KB of
-# stack a frame, where Python 3.11 and later need far less for a call from
-# Python to Python.
+# tried in turn (Windows' CPython takes only less than 256 MB, and a
+# platform may accept a size and then fail to start a thread with it), and
+# the recursion limit is raised in proportion to the one taken: about 2 KB
+# of stack a frame, where Python 3.11 and later need far less for a call
+# from Python to Python. Both are the interpreter's, and plans may run in
+# several threads at once (``corpus --jobs``): the stack size is set and
+# put back under ``_DEEP_LOCK`` around starting the thread, and the limit
+# is only raised while any deep run is in progress, and put back when the
+# last one ends (audit round 9, Y11).
 DEEP_STACKS = (256 * 1024 * 1024, 64 * 1024 * 1024, 16 * 1024 * 1024)  # address space
 FRAME_BYTES = 2048
+_DEEP_LOCK = threading.Lock()
+# The deep runs in progress, and the recursion limit before the first began.
+_deep_runs = 0
+_deep_saved_limit = 0
 
 
 def _deep(func: Callable[[], None]) -> None:
     """Run ``func`` on a thread with the first stack size of DEEP_STACKS
-    the platform accepts and the recursion limit raised to fit it, and
-    restore both after; on the calling thread, as it is, when none is
-    accepted. The limit is the interpreter's, so planning in two threads at
-    once could see the other's; the CLI plans in one."""
+    the platform accepts and starts a thread with, the recursion limit
+    raised to fit it; on the calling thread, as it is, when none is. Safe
+    when several plans run at once in threads: the limit is never lowered
+    while another deep run is in progress (it is put back when the last one
+    ends), and the stack size is changed only for the moment a thread
+    starts, one run at a time."""
+    global _deep_runs, _deep_saved_limit
     failure: list[BaseException] = []
     context = contextvars.copy_context()
 
@@ -607,27 +632,46 @@ def _deep(func: Callable[[], None]) -> None:
         except BaseException as error:  # re-raised on the calling thread
             failure.append(error)
 
-    size = threading.stack_size()
-    for deep in DEEP_STACKS:
+    thread: threading.Thread | None = None
+    with _DEEP_LOCK:
+        size = threading.stack_size()
+        before = sys.getrecursionlimit()
+        changed = False
         try:
-            threading.stack_size(deep)
-        except (ValueError, RuntimeError):
-            continue
-        break
-    else:
+            for deep in DEEP_STACKS:
+                try:
+                    threading.stack_size(deep)
+                except (ValueError, RuntimeError):
+                    continue
+                changed = True
+                # Raised before the thread starts, as it may recurse at once;
+                # another deep run in progress needs at most ``before``.
+                sys.setrecursionlimit(max(before, deep // FRAME_BYTES))
+                started = threading.Thread(target=target, name="diffcone-evidence", daemon=True)
+                try:
+                    started.start()
+                except RuntimeError:  # no thread with that stack: try a smaller one
+                    sys.setrecursionlimit(before)
+                    continue
+                thread = started
+                break
+        finally:
+            if changed:
+                threading.stack_size(size)
+        if thread is not None:
+            if _deep_runs == 0:
+                _deep_saved_limit = before
+            _deep_runs += 1
+    if thread is None:
         func()
         return
-    limit = sys.getrecursionlimit()
     try:
-        sys.setrecursionlimit(max(limit, deep // FRAME_BYTES))
-        try:
-            thread = threading.Thread(target=target, name="diffcone-evidence", daemon=True)
-            thread.start()
-        finally:
-            threading.stack_size(size)
         thread.join()
     finally:
-        sys.setrecursionlimit(limit)
+        with _DEEP_LOCK:
+            _deep_runs -= 1
+            if _deep_runs == 0:
+                sys.setrecursionlimit(_deep_saved_limit)
     if failure:
         raise failure[0]
 
@@ -884,6 +928,9 @@ class _Observers:
                     runs[caller].add(method)
         # Classes calling which may give back an object already in use.
         self.shared_instances = c_index.shared_instances | other.shared_instances
+        # Classes whose instances (or the class) are handed to other code
+        # (``_escaped_member``).
+        self.escaped_classes = c_index.escaped_classes | other.escaped_classes
         # A table getter whose writers all run only inside test windows
         # obtains a test module only in a test that ran one of them (and
         # never outside every test); otherwise it is any getter.
@@ -1070,6 +1117,8 @@ class _Observers:
             if var not in other.symbols or other.lazy_constants.get(var) == writer
         }
         self.declarations = declarations
+        self._declarations_followed: set[int] = set()  # ``_declared``
+        self._writers_of: dict[str, set[str]] | None = None  # ``writes`` reversed
         # Cython name -> the Cython functions at C that mention it (lazily).
         self._cython_mentions: dict[str, list[tuple[str, CythonFunction]]] | None = None
         # The lookups on an external module that a change to code running at
@@ -1543,8 +1592,82 @@ class _Observers:
             while self._pending_sites:
                 site, change, label = self._pending_sites.popleft()
                 self._reader(site, change, label)
-            if not self._stored_results():
+            stored = self._stored_results()
+            if not (self._declared() or stored):
                 break
+
+    def _declared(self) -> bool:
+        """A dependency the project declares (``diffcone.toml``'s
+        ``[[edges]]``, ``from`` depends on ``to``) holds whatever changed in
+        ``to`` (``_declared_reach``): ``to``, or a member of it for a module
+        or class, is in E, can run a member of it (``_runs_e``, from
+        ``_stored_results``: a body change of ``to`` or of anything it
+        calls), or is state written in place by code that can (or by code a
+        test touching a changed file ran). Then ``from`` and its members are
+        followed as readers (``_reader``), so every test whose record
+        reaches ``from`` is selected. A reader of a definition change was
+        followed already (``readers_of`` holds the declarations); a body
+        change reaches no reader, and the code storing what it computes is
+        dropped when it is a test's own (the isolation assumption), which a
+        declaration is there to override (audit round 9, Y13). Each
+        declaration is followed once; True when one was."""
+        followed = False
+        for i, decl in enumerate(self.declarations):
+            if i in self._declarations_followed:
+                continue
+            reach = next(
+                (
+                    (t, *found)
+                    for t in [decl.target, *sorted(self.members.get(decl.target, ()))]
+                    if (found := self._declared_reach(t)) is not None
+                ),
+                None,
+            )
+            if reach is None:
+                continue
+            self._declarations_followed.add(i)
+            followed = True
+            reached, how, ran = reach
+            why = self._why(ran)
+            change = self._change_by_id.get(why.changed_symbol or "")
+            label = (
+                f"{decl.source} depends on {decl.target} ({decl.detail}), and {reached} {how} "
+                f"({why.detail})"
+            )
+            for source in [decl.source, *sorted(self.members.get(decl.source, ()))]:
+                if source in self.symbols:
+                    self._observe(source, Rule.DECLARED_DEPENDENCY, label, change)
+                    self._reader(source, change, label)
+        return followed
+
+    def _declared_reach(self, target: str) -> tuple[str, str] | None:
+        """How a change reaches ``target``, a declaration's ``to`` (or a
+        member of it), and the code it can run that ``_why`` explains; None
+        when it does not. State is reached when code that can run a member
+        of E (or that a test touching a changed file ran) can run one of its
+        writers (``_reaching``), a test's own code included."""
+        if target in self.E or self.guarded.get(target):
+            return "meets the change", target
+        if target in self._runs_e:
+            return "can run code that meets the change", self._runs_e[target]
+        if target in self._file_seeds:
+            return "ran in a test that read a changed file", target
+        if self._writers_of is None:
+            self._writers_of = defaultdict(set)
+            for writer, variables in self.writes.items():
+                for variable in variables:
+                    self._writers_of[variable].add(writer)
+        writers = self._writers_of.get(target)
+        if not writers:
+            return None
+        for code in sorted(self._reaching(frozenset(writers))):
+            if code in self._runs_e:
+                how = "can run code that meets the change"
+                return f"is written by code {code} can run, and {code} {how}", self._runs_e[code]
+            if code in self._file_seeds:
+                how = "ran in a test that read a changed file"
+                return f"is written by code {code} can run, and {code} {how}", code
+        return None
 
     def _stored_results(self) -> bool:
         """A cache an earlier test filled hides what filled it from a later
@@ -2441,6 +2564,7 @@ class _Observers:
             # (changed_target); anything else in test code reaches its scope.
             self._scope(symbol, change)
         self._class_creation(change, label)
+        self._escaped_member(change, label)
         if symbol.kind == SymbolKind.MODULE:
             if kinds & {ChangeKind.ADDED, ChangeKind.DELETED}:
                 self._observe(change.id, Rule.EXECUTED_CHANGED, label, change)
@@ -2607,6 +2731,51 @@ class _Observers:
         self._escalate_module(symbol.module, why)
         self._import_writes(self._creation_code(container.id), change, why)
 
+    def _escaped_member(self, change: SymbolChange, label: str) -> None:
+        """A member added to or deleted from a class whose instances (or the
+        class) are handed to other code (``SourceIndex.escaped_classes``,
+        for the class or a subclass, which inherits the member) changes
+        what that code finds by a name nothing bounds, or by none: a
+        ``runtime_checkable`` ``Protocol``'s ``isinstance`` looking for
+        ``close``, ``dict(obj)`` taking the mapping path once ``keys``
+        exists, ``copy``, ``pickle``. No record shows such a lookup, which
+        ran in library code or found nothing. Only code holding an instance
+        or the class can hand it on, so the code that can is followed, as
+        static planning makes the code referring to an escaped class depend
+        on its members (planner, "attribute of a class passed to other
+        code"): the readers of the class (``_readers``: the code naming it,
+        a variable holding an instance followed in turn, top-level code
+        escalating its module; not a subclass's statement), and the members
+        of its hierarchy and the readers of its subclasses (``_hierarchy``: a
+        running method holds ``self``; audit round 9, Y15). Seeding static
+        planning with the change instead selected, through its name matches,
+        tests that never held one (a fake's ``read`` matched to every
+        ``.read()``). A class attribute bound or no longer bound by the body
+        is the class's own change (``_class_body``)."""
+        symbol = change.symbol
+        container = self.symbols.get(symbol.container or "")
+        if container is None or container.kind != SymbolKind.CLASS:
+            return
+        if {ChangeKind.ADDED, ChangeKind.DELETED} & set(change.changes):
+            self._escaped(container.id, change, label)
+
+    def _escaped(self, cls: str, change: SymbolChange, label: str) -> bool:
+        """``_escaped_member`` for a member of ``cls`` that comes or goes;
+        False when no class of its family is handed on."""
+        escaped = sorted(self._related(cls, SUBCLASSES) & self.escaped_classes)
+        if not escaped:
+            return False
+        why = (
+            f"{label}: instances of {escaped[0]} are handed to other code, which may look "
+            "the member up by a name nothing bounds"
+        )
+        family = self._related(cls, SUBCLASSES)
+        # A subclass's statement names its base and holds no instance; the
+        # code naming a subclass is followed from the hierarchy.
+        self._readers(cls, change, why, exclude=frozenset(family))
+        self._hierarchy(cls, change, why)
+        return True
+
     def _creation_code(self, class_id: str) -> list[str]:
         """What creating the class runs beyond its own statement, which
         ``_import_writes`` follows with the class: its ancestors'
@@ -2684,6 +2853,8 @@ class _Observers:
                 change, f"{label}: its creation (a decorator, metaclass or base) reads its body"
             )
             return
+        if (before.keys() ^ after.keys()) - {CLASS_STATEMENT}:
+            self._escaped(symbol.id, change, label)
         for name in sorted(names):
             attribute = f"{label} (attribute {name})"
             matched = self.by_name.get(name, set())

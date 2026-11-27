@@ -231,6 +231,47 @@ metaclass) and the ancestors' `__init_subclass__` are followed for what
 they write (`_creation_code`). A plain class gains or loses members
 without that.
 
+**Classes handed to other code** (audit round 9, Y15). An instance (or
+the class) passed on (`SourceIndex.escaped_classes`: a call argument, or
+handed to code the analysis does not follow) can have a member looked up
+by a name nothing bounds, or none named: a `runtime_checkable`
+`Protocol`'s `isinstance` checks for `close`, `dict(obj)` takes the
+mapping path once `keys` exists, `copy` and `pickle` look for their
+hooks. Such a lookup runs in library code or finds nothing, so no record
+shows it. A member added to or deleted from such a class, or from a class
+one of whose subclasses is handed on (the subclass inherits it), and a
+class attribute its body binds or no longer binds, reaches the code that
+can hold an instance or the class, as static planning makes the code
+referring to an escaped class depend on its members (the planner's
+"attribute of a class passed to other code" edges): the readers of the
+class (the code naming it; a variable holding an instance is followed in
+turn, top-level code escalates its module; a subclass's statement is no
+holder), the readers of its subclasses, and the members of its hierarchy,
+since a running method holds `self` (`_escaped_member`, `_escaped`).
+Seeding static planning with the change instead selected, through its
+name matches, tests that never held one (a test fake's `read` matched to
+every `.read()`). A definition or body change of an existing member needs
+none of this: the lookup found it at C, and a test that called it ran it.
+Cost: an added or deleted member of a class handed on anywhere (passed as
+`C()` or `C` in a call, or to code the analysis does not follow) selects
+every test that built one or ran a method of its hierarchy, whether or
+not the instance reached such a lookup (`call(Ops(), "a")`, bound to `a`,
+included). Not covered: an instance held in a name or returned by a
+fixture before it is passed on is not an escaped class (static planning
+selects those through the class's structural change).
+
+**Declared dependencies** (audit round 9, Y13). An `[[edges]]` entry
+(`from` depends on `to`) adds `from` to `to`'s readers, so a definition
+change of `to` reaches it as any reader. A body change of `to`, or of
+anything it runs, reaches no reader, and when `to` is a test's own code
+what it stores is credited to that test alone (the isolation
+assumption), which is what a declaration overrides. So once `to` (or a
+member, for a module or class) is in E, can run a member of E
+(`_runs_e`), or is state written in place by code that can (`_reaching`
+over its writers), `from` and its members are followed as readers
+(`_declared`, rule `declared_dependency`): every test whose record
+reaches `from` is selected.
+
 **Compiled code.** A `.pyx` change is invisible to a Python tracer unless
 the extension is built with Cython's `profile=True` directive, whose
 functions raise the same `PY_START` events as Python code (roadmap items 7
