@@ -93,6 +93,9 @@ LAUNCHERS = (("uv", ("run",)),)
 # compiled extensions from the checkout's sources (pandas): it runs no
 # Python of the project, and a change to those sources is planned by the
 # compiled-source rules; a Python process it starts (Cython) is followed.
+# Only that ``ninja``: the recorders flag any other as it starts
+# (``unexempt``, ``meson_rebuild``), and any of these programs pointed at
+# the checkout (``pointed``).
 TOOLS = (
     ("ninja", ()),
     ("uv", ("sync",)),
@@ -127,7 +130,9 @@ def system_query(argv: list[str] | None) -> bool:
     as it is collected); building fontconfig's cache is ``fc-cache``'s, not
     a query. And ``git`` asking about the repository rather than its files
     (``git_query``: pytest-benchmark tags benchmarks with the commit as it
-    adds its options, in every run)."""
+    adds its options, in every run). By the command line only: the
+    recorders flag a query whose environment or directory points it at the
+    checkout as it starts (``pointed``)."""
     if not argv:
         return False
     name = os.path.basename(argv[0]).lower().removesuffix(".exe")
@@ -198,6 +203,181 @@ def git_query(args: list[str]) -> bool:
             return False
         return len(names) == (0 if _CONFIG_LISTS & set(flags) else 1)
     return False
+
+
+# Variables that point a machine query, or ``ninja``, at files of their
+# choosing: fontconfig's configuration and font directories, git's
+# repository, work tree, objects and configuration, ``file``'s magic
+# database, the locales ``locale -a`` lists, and where all of them look by
+# default (``HOME``, the XDG directories). Values are paths or lists of
+# them (``os.pathsep``); a relative one is the spawn's working directory's.
+_POINTING_ENV = (
+    "FONTCONFIG_FILE",
+    "FONTCONFIG_PATH",
+    "FONTCONFIG_SYSROOT",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_EXEC_PATH",
+    "MAGIC",
+    "LOCPATH",
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_DIRS",
+    "XDG_DATA_DIRS",
+)
+# Configuration given in the environment itself, whose values may name any
+# file or program: what the query then reads is unknown.
+_CONFIGURING_ENV = ("GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")
+
+
+def exempt_program(argv: list[str] | None) -> bool:
+    """Whether the spawn accounting takes ``argv`` at its word as a program
+    that runs nothing of the project: a system query, or a build tool."""
+    return _matches(argv, TOOLS) or system_query(argv)
+
+
+def _in_checkout(path: str, roots: tuple[str, ...], owned: tuple[str, ...]) -> bool:
+    """Whether the absolute ``path`` is a file or directory of the checkout,
+    its root included: not the repository's own ``.git``, nor what an
+    environment inside the checkout owns (installed code)."""
+    real = os.path.normcase(os.path.realpath(path)) + os.sep
+    for root in roots:
+        if not real.startswith(root):
+            continue
+        rel = real[len(root) :]
+        if rel.startswith(".git" + os.sep):
+            return False
+        return not any(rel.startswith(o) or rel == o + os.sep for o in owned)
+    return False
+
+
+def pointed(
+    argv: list[str],
+    executable: Any,
+    cwd: Any,
+    env: Any,
+    roots: tuple[str, ...],
+    owned: tuple[str, ...] = (),
+) -> str | None:
+    """Why an exempt program (``exempt_program``) is not what its name says
+    here, or None: the program found is a file of the checkout (a test's
+    stand-in on ``PATH``); a variable of its environment points it at files
+    of the checkout (``FONTCONFIG_FILE``, ``GIT_DIR``, ``HOME``, ...), or
+    configures it some way nothing here reads (``GIT_CONFIG_PARAMETERS``);
+    or ``git`` runs anywhere but the checkout root (its working directory,
+    ``-C``: a repository the tests keep as data). ``env`` None is this
+    process's environment, ``cwd`` None its working directory; ``roots``
+    end in a separator; ``owned``: what environments inside the checkout
+    own (``environments``). A program that cannot be found starts nothing."""
+    try:
+        environ = os.environ if env is None else env
+        base = os.path.abspath(os.getcwd() if cwd is None else os.fsdecode(os.fspath(cwd)))
+
+        def inside(path: str) -> bool:
+            return _in_checkout(os.path.join(base, path), roots, owned)
+
+        name = os.path.basename(argv[0])
+        program = os.fsdecode(executable) if executable is not None else argv[0]
+        if os.sep in program or (os.altsep and os.altsep in program):
+            found: str | None = program
+        else:
+            import shutil
+
+            found = shutil.which(program, path=environ.get("PATH"))
+        if found is None:
+            return None
+        if inside(found):
+            return f"{name} is {found}, a file of the checkout"
+        for variable in _CONFIGURING_ENV:
+            if variable in environ:
+                return f"{name} ran with {variable} set"
+        for variable in _POINTING_ENV:
+            value = environ.get(variable)
+            if not value:
+                continue
+            for part in os.fsdecode(value).split(os.pathsep):
+                if part and inside(part):
+                    return f"{name} ran with {variable}={part}, in the checkout"
+        if name.lower().removesuffix(".exe") == "git":
+            directory = base
+            rest = argv[1:]
+            while len(rest) > 1 and rest[0] == "-C":
+                directory = os.path.join(directory, rest[1])
+                rest = rest[2:]
+            if os.path.normcase(os.path.realpath(directory)) + os.sep not in roots:
+                return f"git ran in {directory}, not the checkout's root"
+    except (TypeError, ValueError, OSError) as exc:
+        return f"{argv[0]}: {type(exc).__name__}: {exc}"
+    return None
+
+
+# meson-python's editable loader rebuilds the project's compiled extensions
+# as it is imported (``_<dist>_editable_loader.py``, a copy of
+# ``mesonpy/_editable.py`` installed in site-packages): ``MesonpyMetaFinder``
+# runs its build command (``[ninja, *compile args]``; ``-n`` added for its
+# dry run) in its build directory, from ``_rebuild`` or ``_work_to_do``.
+_MESON_LOADER_METHODS = frozenset({"_rebuild", "_work_to_do"})
+
+
+def meson_rebuild(
+    argv: list[str], cwd: Any, frame: Any, roots: tuple[str, ...], owned: tuple[str, ...] = ()
+) -> bool:
+    """Whether ``ninja`` is started by meson-python's editable loader: a
+    frame on the stack from ``frame`` up is ``MesonpyMetaFinder._rebuild``
+    or ``_work_to_do`` in a module named ``_<dist>_editable_loader`` outside
+    the checkout, and the command line is the finder's own build command
+    (or its dry run), run in the finder's build directory."""
+    for _ in range(32):
+        if frame is None:
+            return False
+        code = frame.f_code
+        if code.co_name in _MESON_LOADER_METHODS:
+            module = str(frame.f_globals.get("__name__", ""))
+            finder = frame.f_locals.get("self")
+            if (
+                module.startswith("_")
+                and module.endswith("_editable_loader")
+                and type(finder).__name__ == "MesonpyMetaFinder"
+                and not _in_checkout(os.path.abspath(code.co_filename), roots, owned)
+            ):
+                command = list(getattr(finder, "_build_cmd", None) or ())
+                path = getattr(finder, "_build_path", None)
+                if not command or path is None or cwd is None:
+                    return False
+                same_dir = os.path.realpath(os.fsdecode(cwd)) == os.path.realpath(path)
+                return same_dir and list(argv) in (command, [*command, "-n"])
+        frame = frame.f_back
+    return False
+
+
+def unexempt(
+    event_args: Any, roots: tuple[str, ...], owned: tuple[str, ...], frame: Any
+) -> str | None:
+    """For a ``subprocess.Popen`` audit event (``executable, args, cwd,
+    env``) of a program the spawn accounting exempts by its name
+    (``exempt_program``), why the exemption does not hold here (``pointed``;
+    ``ninja`` not started by meson-python's editable loader, a test driving
+    a build of its own), else None."""
+    argv = argv_of(event_args)
+    if not argv or not exempt_program(argv):
+        return None
+    executable = event_args[0] if len(event_args) > 0 else None
+    cwd = event_args[2] if len(event_args) > 2 else None
+    env = event_args[3] if len(event_args) > 3 else None
+    if os.path.basename(argv[0]).lower().removesuffix(".exe") == "ninja":
+        if not meson_rebuild(argv, cwd, frame, roots, owned):
+            return f"{' '.join(argv)[:200]}: ninja not started by meson-python's editable loader"
+        return None
+    return pointed(argv, executable, cwd, env, roots, owned)
 
 
 # --------------------------------------------------------------------------- spawn accounting
@@ -674,10 +854,26 @@ def sqlite_path(database: Any) -> str | None:
 # (``pkgutil.get_data``, ``importlib.resources``), not to import a module.
 DATA_READERS = frozenset({"get_data", "open_resource", "read_binary", "read_text"})
 # Starts that raise no audit event: ``multiprocessing``'s spawn and
-# forkserver children (through ``_posixsubprocess.fork_exec``), and a
-# subinterpreter (Python 3.14), whose code this interpreter's monitoring
-# does not see. (module, function) pairs.
-UNAUDITED_STARTS = (("multiprocessing.util", "spawnv_passfds"), ("_interpreters", "create"))
+# forkserver children (through ``_posixsubprocess.fork_exec``), and code
+# run in a subinterpreter, which this interpreter's monitoring does not
+# see: creating one, and every call that runs code in one, wherever it was
+# created (an earlier test's, a fixture's, an ``InterpreterPoolExecutor``'s
+# warm worker): ``_interpreters`` (Python 3.13+, behind
+# ``concurrent.interpreters``) and ``_xxsubinterpreters`` (3.12).
+# (module, function) pairs.
+UNAUDITED_STARTS = (
+    ("multiprocessing.util", "spawnv_passfds"),
+    ("_interpreters", "create"),
+    ("_interpreters", "exec"),
+    ("_interpreters", "call"),
+    ("_interpreters", "run_string"),
+    ("_interpreters", "run_func"),
+    ("_xxsubinterpreters", "create"),
+    ("_xxsubinterpreters", "run_string"),
+    ("_xxsubinterpreters", "run_func"),
+)
+# Of those, the ones that return the pid of a process they started.
+PID_STARTS = frozenset({("multiprocessing.util", "spawnv_passfds")})
 
 
 def environments(roots: tuple[str, ...]) -> tuple[str, ...]:
@@ -947,6 +1143,11 @@ def _audit(event: str, args: Any) -> None:
             # A fork goes on recording here (_forked); an exec after it flags.
             if event not in ("os.fork", "os.forkpty") and not in_popen(event, args):
                 _flag(f"started a process another way ({event})")
+            elif event == "subprocess.Popen":
+                # A program taken at its name, pointed at the checkout.
+                why = unexempt(args, _roots, _environments, sys._getframe(1))
+                if why:
+                    _flag(why)
         elif event == "exec":
             caller = sys._getframe().f_back
             reads = annotation_reads(args[0], caller, _code_path) if args else None

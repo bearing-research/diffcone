@@ -167,3 +167,111 @@ def test_a_metadata_scan_of_a_search_path_entry_is_not_recorded(monkeypatch, tmp
     assert scan(entry)
     assert not scan(str(tmp_path / "data.txt"))  # not an entry
     assert not touch(entry)  # no importlib.metadata frame
+
+
+# --------------------------------------------------------------------------- pointed queries
+
+
+def _checkout(tmp_path):
+    root = tmp_path / "repo"
+    (root / "tests" / "data" / "b.git").mkdir(parents=True)
+    (root / ".git").mkdir()
+    (root / ".venv" / "bin").mkdir(parents=True)
+    real = str(root.resolve()) + child.os.sep
+    return root, (real,), (".venv/bin/".replace("/", child.os.sep),)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX paths and programs")
+@pytest.mark.parametrize(
+    ("argv", "cwd", "env", "why"),
+    [
+        (["fc-list"], "", {}, None),
+        (["fc-list"], "", {"FONTCONFIG_FILE": "tests/fonts.conf"}, "FONTCONFIG_FILE"),
+        (["fc-list"], "", {"FONTCONFIG_PATH": "/etc/fonts:{root}/tests"}, "FONTCONFIG_PATH"),
+        (["fc-list"], "", {"FONTCONFIG_FILE": "/etc/fonts/fonts.conf"}, None),
+        (["fc-list"], "", {"HOME": "{root}"}, "HOME"),
+        (["locale", "-a"], "", {"LOCPATH": "{root}/tests"}, "LOCPATH"),
+        (["git", "rev-parse", "HEAD"], "", {}, None),
+        (["git", "rev-parse", "HEAD"], "tests", {}, "not the checkout's root"),
+        (["git", "-C", "tests/data/b.git", "rev-parse", "HEAD"], "", {}, "not the checkout"),
+        (["git", "-C", "{root}", "rev-parse", "HEAD"], "/", {}, None),
+        (["git", "rev-parse", "HEAD"], "/", {}, "not the checkout's root"),
+        (["git", "rev-parse", "HEAD"], "", {"GIT_DIR": "{root}/.git"}, None),
+        (["git", "rev-parse", "HEAD"], "", {"GIT_DIR": "tests/data/b.git"}, "GIT_DIR"),
+        (["git", "config", "--get", "a.b"], "", {"GIT_CONFIG_GLOBAL": "tests/c"}, "GIT_CONFIG"),
+        (["git", "config", "--get", "a.b"], "", {"GIT_CONFIG_PARAMETERS": "'a.b'='1'"}, "set"),
+        (["git", "config", "--get", "a.b"], "", {"GIT_CONFIG_COUNT": "1"}, "set"),
+        (["file", "-b", "/usr/bin/python3"], "", {"MAGIC": "{root}/tests/magic"}, "MAGIC"),
+        # What an environment inside the checkout owns is installed code.
+        (["fc-list"], "", {"FONTCONFIG_PATH": "{root}/.venv/bin"}, None),
+    ],
+)
+def test_y10_a_query_pointed_at_the_checkout_is_not_exempt(tmp_path, argv, cwd, env, why):
+    """A machine query reads what its environment and directory point it at:
+    files of the checkout make it a reader of the checkout."""
+    root, roots, owned = _checkout(tmp_path)
+    fill = {"root": str(root)}
+    argv = [a.format(**fill) for a in argv]
+    env = {"PATH": "/usr/bin:/bin", **{k: v.format(**fill) for k, v in env.items()}}
+    where = cwd if cwd.startswith("/") else str(root / cwd)
+    found = child.pointed(argv, "/usr/bin/" + argv[0], where, env, roots, owned)
+    assert (found is None) if why is None else (why in (found or ""))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX paths and programs")
+def test_y10_a_stand_in_program_in_the_checkout_is_not_exempt(tmp_path):
+    root, roots, owned = _checkout(tmp_path)
+    bin_dir = root / "tests" / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "git"
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    env = {"PATH": f"{bin_dir}:/usr/bin"}
+    found = child.pointed(["git", "rev-parse", "HEAD"], None, str(root), env, roots, owned)
+    assert "a file of the checkout" in (found or "")
+
+
+LOADER = """\
+class MesonpyMetaFinder:
+    def __init__(self, cmd, path):
+        self._build_cmd = cmd
+        self._build_path = path
+
+    def _rebuild(self, run):
+        return run(self._build_cmd, self._build_path)
+
+    def _work_to_do(self, run):
+        return run(self._build_cmd + ["-n"], self._build_path)
+"""
+
+
+@pytest.mark.parametrize(
+    ("module", "argv", "same_dir", "expected"),
+    [
+        ("_proj_editable_loader", ["/usr/bin/ninja"], True, True),
+        ("_proj_editable_loader", ["/usr/bin/ninja", "-n"], True, True),
+        ("_proj_editable_loader", ["/usr/bin/ninja", "-C", "x"], True, False),
+        ("_proj_editable_loader", ["/usr/bin/ninja"], False, False),
+        ("proj_loader", ["/usr/bin/ninja"], True, False),
+    ],
+)
+def test_y10_ninja_is_exempt_only_from_meson_pythons_editable_loader(
+    tmp_path, module, argv, same_dir, expected
+):
+    """meson-python's editable loader (``_<dist>_editable_loader``) rebuilds
+    the project with its own build command in its build directory: that
+    ``ninja`` is exempt. Any other (a test driving a build of its own) is not."""
+    namespace: dict[str, Any] = {"__name__": module}
+    exec(compile(LOADER, str(tmp_path / f"{module}.py"), "exec"), namespace)
+    build = tmp_path / "build"
+    build.mkdir()
+    finder = namespace["MesonpyMetaFinder"](["/usr/bin/ninja"], str(build))
+    roots = (str((tmp_path / "repo").resolve()) + child.os.sep,)
+
+    def run(cmd, path):
+        cwd = path if same_dir else str(tmp_path)
+        return child.meson_rebuild(argv, cwd, sys._getframe(), roots)
+
+    use = finder._work_to_do if argv[-1:] == ["-n"] else finder._rebuild
+    assert use(run) is expected
+    assert not child.meson_rebuild(argv, str(build), sys._getframe(), roots)

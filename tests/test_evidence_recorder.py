@@ -573,6 +573,87 @@ def test_e34_work_handed_off_outside_every_test_stays_in_the_hook_phase(repo):
     assert "lib.late.compute" in evidence.hook_phase
 
 
+# A pool whose worker thread a test starts (a ``ThreadPoolExecutor`` starts
+# its threads as work is submitted; a ``ThreadPool`` as it is made), then
+# serving work a hook hands it after each test.
+HOOK_POOLS = {
+    "executor": (
+        "from concurrent.futures import ThreadPoolExecutor\n\n"
+        "POOL = ThreadPoolExecutor(1)\n\n\n"
+        "def run(fn):\n    return POOL.submit(fn).result()\n"
+    ),
+    "threadpool": (
+        "from multiprocessing.pool import ThreadPool\n\n_POOL = []\n\n\n"
+        "def run(fn):\n    if not _POOL:\n        _POOL.append(ThreadPool(1))\n"
+        "    return _POOL[0].apply(fn)\n"
+    ),
+}
+
+
+@needs_monitoring
+@pytest.mark.parametrize("pool", sorted(HOOK_POOLS))
+def test_y9_work_a_hook_hands_to_a_pool_a_test_started_is_the_hook_phases(repo, pool):
+    """``test_a`` starts the pool's thread; after every test a hook hands the
+    pool ``refresh``, which sets what ``test_b`` reads. That work is the hook
+    phase's, not ``test_a``'s (whose thread it runs on): a change to
+    ``compute`` selects ``test_b``."""
+    jobs = HOOK_POOLS[pool] + "\n\ndef noop():\n    return None\n\n\n"
+    jobs += "def compute():\n    return {}\n"
+    base = repo.commit(
+        {
+            **IGNORE,
+            "lib/__init__.py": "",
+            "lib/jobs.py": jobs.format(1),
+            "lib/work.py": (
+                "import os\n\nfrom lib.jobs import compute\n\n\n"
+                "def refresh():\n    os.environ['Y9_MODE'] = str(compute())\n"
+            ),
+            "tests/__init__.py": "",
+            "tests/conftest.py": (
+                "import pytest\n\nfrom lib import jobs, work\n\n\n"
+                "@pytest.hookimpl(wrapper=True, tryfirst=True)\n"
+                "def pytest_runtest_protocol(item, nextitem):\n"
+                "    try:\n        return (yield)\n    finally:\n"
+                "        jobs.run(work.refresh)\n"
+            ),
+            "tests/test_a.py": "from lib import jobs\n\n\ndef test_a():\n    jobs.run(jobs.noop)\n",
+            "tests/test_b.py": (
+                "import os\n\n\ndef test_b():\n    assert os.environ['Y9_MODE'] == '1'\n"
+            ),
+        }
+    )
+    evidence = repo.collect()
+    assert "lib.jobs.compute" in evidence.hook_phase
+    assert "lib.jobs.compute" not in executed(evidence, A)
+    head = repo.commit({"lib/jobs.py": jobs.format(2)})
+    assert B in selected(_plan(repo, base, head, evidence))
+
+
+def test_y9_a_pools_own_threads_get_no_lasting_owner():
+    """The threads a pool starts serve whatever is handed to them later: none
+    is given the windows open as it starts (``_pool_worker``)."""
+    import asyncio
+    import multiprocessing.pool
+    import threading
+
+    from diffcone import collect
+
+    worker = getattr(multiprocessing.pool, "worker")  # noqa: B009 (not in the stubs)
+
+    class WorkerThread(threading.Thread):
+        pass
+
+    WorkerThread.__module__ = "anyio._backends._asyncio"
+    loop = asyncio.new_event_loop()
+    try:
+        assert collect._pool_worker(WorkerThread())
+        assert collect._pool_worker(threading.Thread(target=worker))
+        assert collect._pool_worker(threading.Thread(target=loop.run_forever))
+        assert not collect._pool_worker(threading.Thread(target=print))
+    finally:
+        loop.close()
+
+
 # --------------------------------------------------------------------------- files a test reads
 
 
@@ -1347,6 +1428,141 @@ def test_a_test_module_listing_fonts_at_import_does_not_widen_plans(
     assert selected(other) == ({fonts, OTHER_ID} if widens else {OTHER_ID})
 
 
+def _program(tmp_path, name, script):
+    """A stand-in for a system program, outside the checkout: the recorder
+    goes by the name."""
+    fake = tmp_path / "bin" / name
+    fake.parent.mkdir(exist_ok=True)
+    fake.write_text("#!/bin/sh\n" + script)
+    fake.chmod(0o755)
+    return str(fake)
+
+
+@needs_monitoring
+@posix_children
+@pytest.mark.parametrize("where", ["test", "import"])
+def test_y10_a_font_query_pointed_at_the_checkouts_fonts_flags(repo, tmp_path, where):
+    """``fc-list`` with ``FONTCONFIG_FILE`` naming a configuration of the
+    checkout lists the checkout's fonts: a change to them changes what the
+    test sees, so it is no machine query and flags (its test, or with the
+    query at import, the module being imported)."""
+    fc_list = _program(tmp_path, "fc-list", 'cat "$FONTCONFIG_FILE"\n')
+    query = (
+        f"subprocess.check_output([{fc_list!r}], "
+        "env={**os.environ, 'FONTCONFIG_FILE': str(CONF)}, text=True)"
+    )
+    test = (
+        "import os\nimport subprocess\nfrom pathlib import Path\n\n"
+        "CONF = Path(__file__).parent / 'fonts' / 'fonts.conf'\n"
+    )
+    if where == "test":
+        test += f"\n\ndef test_fonts():\n    assert 'Arial' in {query}\n"
+    else:
+        test += f"OUT = {query}\n\n\ndef test_fonts():\n    assert 'Arial' in OUT\n"
+    files = {**BASE, "tests/fonts/fonts.conf": "Arial\n", "tests/test_fonts.py": test}
+    (plan,) = _plans(repo, files, {"tests/fonts/fonts.conf": "Helvetica\n"})
+    assert "tests/test_fonts.py::test_fonts" in selected(plan)
+    assert "no_evidence" not in rules(plan, "tests/test_fonts.py::test_fonts")
+
+
+@needs_monitoring
+@posix_children
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+@pytest.mark.parametrize("how", ["-C", "cwd", "GIT_DIR", "GIT_CONFIG_GLOBAL"])
+def test_y10_a_git_query_of_a_repository_the_tests_keep_flags(repo, how):
+    """A bare repository (or a git configuration) the tests keep as data:
+    ``git rev-parse`` run in it, or pointed at it, reports what the
+    checkout's files hold, not the commit."""
+    data = "Path(__file__).parent / 'data'"
+    calls = {
+        "-C": "['git', '-C', str(DATA / 'b.git'), 'rev-parse', 'HEAD']",
+        "cwd": "['git', 'rev-parse', 'HEAD'], cwd=DATA / 'b.git'",
+        "GIT_DIR": (
+            "['git', 'rev-parse', 'HEAD'], env={**os.environ, 'GIT_DIR': str(DATA / 'b.git')}"
+        ),
+        "GIT_CONFIG_GLOBAL": (
+            "['git', 'config', '--get', 'test.mode'],"
+            " env={**os.environ, 'GIT_CONFIG_GLOBAL': str(DATA / 'gitconfig')}"
+        ),
+    }
+    expected = "'1' * 40" if how != "GIT_CONFIG_GLOBAL" else "'1'"
+    files = {
+        **BASE,
+        "tests/data/b.git/HEAD": "ref: refs/heads/main\n",
+        "tests/data/b.git/config": "[core]\n\trepositoryformatversion = 0\n\tbare = true\n",
+        "tests/data/b.git/refs/heads/main": "1" * 40 + "\n",
+        "tests/data/b.git/objects/.keep": "",
+        "tests/data/gitconfig": "[test]\n\tmode = 1\n",
+        "tests/test_git.py": (
+            f"import os\nimport subprocess\nfrom pathlib import Path\n\nDATA = {data}\n\n\n"
+            f"def test_git():\n    out = subprocess.check_output({calls[how]}, text=True)\n"
+            f"    assert out.strip() == {expected}\n"
+        ),
+    }
+    change = (
+        {"tests/data/gitconfig": "[test]\n\tmode = 2\n"}
+        if how == "GIT_CONFIG_GLOBAL"
+        else {"tests/data/b.git/refs/heads/main": "2" * 40 + "\n"}
+    )
+    (plan,) = _plans(repo, files, change)
+    assert "tests/test_git.py::test_git" in selected(plan)
+    assert "no_evidence" not in rules(plan, "tests/test_git.py::test_git")
+
+
+@needs_monitoring
+@posix_children
+def test_y10_a_test_driving_ninja_itself_flags(repo, tmp_path):
+    """``ninja`` is exempt as the build meson-python's editable loader runs
+    as the project is imported; a test running a build of its own (whose
+    rules read the checkout's files and run any command) is not, and flags."""
+    ninja = _program(tmp_path, "ninja", 'cat "$1/src.txt" > "$2"\n')
+    files = {
+        **BASE,
+        "tests/data/src.txt": "one\n",
+        "tests/test_gen.py": (
+            "import subprocess\nfrom pathlib import Path\n\n"
+            "DATA = Path(__file__).parent / 'data'\n\n\n"
+            "def test_gen(tmp_path):\n"
+            f"    subprocess.run([{ninja!r}, str(DATA), str(tmp_path / 'out')], check=True)\n"
+            "    assert (tmp_path / 'out').read_text() == 'one\\n'\n"
+        ),
+    }
+    (plan,) = _plans(repo, files, {"tests/data/src.txt": "uno\n"})
+    assert "no_evidence" not in rules(plan, "tests/test_gen.py::test_gen")
+    assert "tests/test_gen.py::test_gen" in selected(plan)
+
+
+@needs_monitoring
+@posix_children
+def test_y10_ninja_from_meson_pythons_editable_loader_does_not_flag(repo, tmp_path, monkeypatch):
+    """The editable loader of a meson-python install (``_<dist>_editable_loader``
+    in site-packages) rebuilds the project's extensions with ``ninja`` as a
+    test module imports it: that is no test's doing, and flags nothing."""
+    ninja = _program(tmp_path, "ninja", "exit 0\n")
+    build = tmp_path / "build"
+    build.mkdir()
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "_proj_editable_loader.py").write_text(
+        "import subprocess\n\n\nclass MesonpyMetaFinder:\n"
+        "    def __init__(self, cmd, path):\n"
+        "        self._build_cmd = cmd\n        self._build_path = path\n\n"
+        "    def _rebuild(self):\n"
+        "        subprocess.run(self._build_cmd, cwd=self._build_path, check=True)\n\n\n"
+        f"def init():\n    MesonpyMetaFinder([{ninja!r}], {str(build)!r})._rebuild()\n"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(site))
+    files = {
+        **BASE,
+        "tests/test_ext.py": (
+            "import _proj_editable_loader\n\n_proj_editable_loader.init()\n\n\n"
+            "def test_ext():\n    pass\n"
+        ),
+    }
+    (plan,) = _plans(repo, files, OTHER_CHANGED)
+    assert selected(plan) == {OTHER_ID}
+
+
 WORK_ID = "tests/test_work.py::test_work"
 T_WORK = "from pkg.work import handle\n\n\ndef test_work():\n    assert handle(1) == 2\n"
 
@@ -1724,6 +1940,152 @@ def test_a_module_fixture_instance_is_credited_to_the_tests_that_used_it(repo):
     assert selected(_plan(repo, base, head, evidence)) == {"tests/test_b.py::test_b"}
 
 
+# A conftest's shared fixture whose later instances reuse what the first
+# computed: in a dict of the conftest, on an attribute of a library module.
+REUSED_FIXTURES = {
+    "dict": (
+        "_cache = {{}}\n\n\n@pytest.fixture(scope={scope!r})\ndef data():\n"
+        "    if 'v' not in _cache:\n        _cache['v'] = m.compute()\n    return _cache['v']\n"
+    ),
+    "attr": (
+        "@pytest.fixture(scope={scope!r})\ndef data():\n"
+        "    if not hasattr(pytest, '_y8'):\n        pytest._y8 = m.compute()\n"
+        "    return pytest._y8\n"
+    ),
+}
+REUSED_BENCH = asv_target("bench.time_compute", "lib.m.compute")
+OTHER_BENCH = asv_target("bench.time_g", "lib.other.g")
+
+
+@needs_monitoring
+@pytest.mark.parametrize("scope", ["module", "class"])
+@pytest.mark.parametrize("variant", sorted(REUSED_FIXTURES))
+def test_y8_a_fixture_instance_reusing_an_earlier_ones_work_is_credited(repo, variant, scope):
+    """``test_b``'s instance of a shared fixture returns what ``test_a``'s
+    instance computed: its own setup ran no ``compute``, yet its outcome is
+    ``compute``'s. Every instance of the definition set up before a test
+    ended is credited to the test, so a change to ``compute`` selects both."""
+    test_b = "def test_b(data):\n    assert data == 1\n"
+    if scope == "class":
+        test_b = "class TestB:\n    def test_b(self, data):\n        assert data == 1\n"
+    files = {
+        **IGNORE,
+        "lib/__init__.py": "",
+        "lib/m.py": "def compute():\n    return 1\n",
+        "lib/other.py": OTHER,
+        "tests/__init__.py": "",
+        "tests/conftest.py": (
+            "import pytest\n\nfrom lib import m\n\n\n"
+            + REUSED_FIXTURES[variant].format(scope=scope)
+        ),
+        "tests/a/__init__.py": "",
+        "tests/a/test_a.py": "def test_a(data):\n    assert data\n",
+        "tests/b/__init__.py": "",
+        "tests/b/test_b.py": test_b,
+    }
+    base = repo.commit(files)
+    evidence = repo.collect()
+    b = "tests/b/test_b.py::TestB::test_b" if scope == "class" else "tests/b/test_b.py::test_b"
+    assert "lib.m.compute" in executed(evidence, b)
+    head = repo.commit({"lib/m.py": "def compute():\n    return 2\n"})
+    plan = _plan(repo, base, head, evidence, [REUSED_BENCH, OTHER_BENCH])
+    assert selected(plan) == {"tests/a/test_a.py::test_a", b, REUSED_BENCH.runner_id}
+
+
+@needs_monitoring
+@posix_only
+def test_y8_an_instance_set_up_after_a_test_ended_in_another_process_is_not_its(repo):
+    """Two pytest processes one after the other (as xdist workers whose
+    clocks agree): ``test_a`` ended in the first before the second set up
+    its own instance, which ran ``part_b``, so a change to ``part_b``
+    cannot reach ``test_a``; ``test_b``, in the second, is selected."""
+    build = (
+        "def build(name):\n    return part_a() if name.endswith('test_a') else part_b()\n\n\n"
+        "def part_a():\n    return 1\n\n\ndef part_b():\n    return {}\n"
+    )
+    base = repo.commit(
+        {
+            **IGNORE,
+            "lib/__init__.py": "",
+            "lib/build.py": build.format(1),
+            "tests/__init__.py": "",
+            "tests/conftest.py": (
+                "import pytest\n\nfrom lib.build import build\n\n\n"
+                "@pytest.fixture(scope='module')\n"
+                "def built(request):\n    return build(request.module.__name__)\n"
+            ),
+            "tests/test_a.py": "def test_a(built):\n    assert built == 1\n",
+            "tests/test_b.py": "def test_b(built):\n    assert built\n",
+        }
+    )
+    py = sys.executable
+    command = (
+        f'sh -c \'{py} -m pytest "$@" tests/test_a.py && {py} -m pytest "$@" tests/test_b.py\' sh'
+    )
+    evidence = repo.collect(command=command)
+    head = repo.commit({"lib/build.py": build.format(2)})
+    assert selected(_plan(repo, base, head, evidence)) == {"tests/test_b.py::test_b"}
+
+
+@needs_monitoring
+def test_y8_which_instances_preceded_a_test_does_not_make_it_unstable(repo):
+    """Run in reverse, ``test_a`` ends after ``test_b``'s instance set up, so
+    that instance is credited to it in that run: the records are joined,
+    and the order the tests ran in does not mark them unstable."""
+    from diffcone.evidence import FLAG_UNSTABLE
+
+    build = (
+        "def build(name):\n    return part_a() if name.endswith('test_a') else part_b()\n\n\n"
+        "def part_a():\n    return 1\n\n\ndef part_b():\n    return {}\n"
+    )
+    base = repo.commit(
+        {
+            **IGNORE,
+            "lib/__init__.py": "",
+            "lib/build.py": build.format(1),
+            "tests/__init__.py": "",
+            "tests/conftest.py": (
+                "import pytest\n\nfrom lib.build import build\n\n\n"
+                "@pytest.fixture(scope='module')\n"
+                "def built(request):\n    return build(request.module.__name__)\n"
+            ),
+            "tests/test_a.py": "def test_a(built):\n    assert built == 1\n",
+            "tests/test_b.py": "def test_b(built):\n    assert built\n",
+        }
+    )
+    evidence = repo.collect(reverse_check=True)
+    assert not any(r.flags & FLAG_UNSTABLE for r in evidence.tests.values())
+    head = repo.commit({"lib/build.py": build.format(2)})
+    assert selected(_plan(repo, base, head, evidence)) == {A, B}
+
+
+def test_y8_instances_of_processes_whose_clocks_disagree_are_credited():
+    """Without an order between two processes (their monotonic clocks do not
+    agree), an instance of another process is credited whenever it was set
+    up; one of the test's own process only when it was set up before the
+    test ended there."""
+    from diffcone.evidence import _credit_fixtures, _Raw
+
+    def raw(clocks):
+        r = _Raw({}, set(), set(), {}, {}, {}, {}, "")
+        r.tests["t"] = (set(), set(), set(), 0)
+        r.test_fixtures["t"] = {"tests\x1fdata\x1fmodule"}
+        r.test_ends["t"] = {"1": 100}
+        for key, pid, start, symbol in (
+            ("1\x1etests\x1fdata\x1fmodule\x1fa", "1", 50, "early"),
+            ("1\x1etests\x1fdata\x1fmodule\x1fb", "1", 150, "late"),
+            ("2\x1etests\x1fdata\x1fmodule\x1fc", "2", 10**12, "other"),
+        ):
+            r.fixture_starts[key] = (pid, "tests\x1fdata\x1fmodule", start)
+            r.fixtures[key] = ({symbol}, set(), set(), 0)
+        r.clocks = clocks
+        return _credit_fixtures(r)["t"][0]
+
+    assert raw({"1": (10**15, 0), "2": (10**15 + 5 * 10**9, 0)}) == {"early", "other"}
+    # Agreeing clocks: the other process's instance set up long after.
+    assert raw({"1": (10**15, 0), "2": (10**15, 0)}) == {"early"}
+
+
 @needs_monitoring
 @posix_children
 def test_a_process_left_running_flags_one_module_fixture_instance(repo):
@@ -1790,6 +2152,58 @@ def test_e17_code_the_recording_cannot_see_flags_its_test(repo, test):
         {"lib/other.py": "def g():\n    return 2\n"},
     )
     assert chosen == {"tests/test_t.py::test_t"}
+
+
+# Code run in a subinterpreter another test, or a fixture, created.
+SUBINTERPRETERS = {
+    # Python 3.14: a pool's worker interpreter, warmed by the first test.
+    "pool": (
+        (3, 14),
+        "from concurrent.futures import InterpreterPoolExecutor\n\nPOOL = []\n\n\n"
+        "def get():\n    if not POOL:\n        POOL.append(InterpreterPoolExecutor(1))\n"
+        "        POOL[0].submit(int, '3').result()\n    return POOL[0]\n\n\n"
+        "def run():\n    return get().submit(int, '4').result()\n",
+    ),
+    # Python 3.13+: an interpreter a module fixture made, run by the test.
+    "fixture": (
+        (3, 13),
+        "import _interpreters\n\nMADE = []\n\n\n"
+        "def get():\n    if not MADE:\n        MADE.append(_interpreters.create())\n"
+        "    return MADE[0]\n\n\n"
+        "def run():\n    _interpreters.exec(get(), 'x = 1')\n",
+    ),
+    # Python 3.12's private module.
+    "xx": (
+        (3, 12),
+        "import _xxsubinterpreters as interpreters\n\nMADE = []\n\n\n"
+        "def get():\n    if not MADE:\n        MADE.append(interpreters.create())\n"
+        "    return MADE[0]\n\n\n"
+        "def run():\n    interpreters.run_string(get(), 'x = 1')\n",
+    ),
+}
+
+
+@needs_monitoring
+@pytest.mark.parametrize("kind", sorted(SUBINTERPRETERS))
+def test_y18_code_run_in_a_subinterpreter_another_test_made_flags(repo, kind):
+    """``test_a`` creates the interpreter (or warms the pool's); ``test_b``
+    runs code in it, which the recording cannot see: both are flagged,
+    not only the test that created it."""
+    since, interp = SUBINTERPRETERS[kind]
+    if sys.version_info[:2] < since or (kind == "xx" and sys.version_info[:2] != (3, 12)):
+        pytest.skip(f"{kind} needs Python {since}")
+    files = {
+        **BASE,
+        "pkg/interp.py": interp,
+        "tests/conftest.py": (
+            "import pytest\n\nfrom pkg import interp\n\n\n"
+            "@pytest.fixture(scope='module')\ndef made():\n    return interp.get()\n"
+        ),
+        "tests/test_a.py": "def test_a(made):\n    pass\n",
+        "tests/test_b.py": "from pkg import interp\n\n\ndef test_b():\n    interp.run()\n",
+    }
+    (plan,) = _plans(repo, files, OTHER_CHANGED)
+    assert selected(plan) == {A, B, OTHER_ID}
 
 
 # A pool's workers serve later tests.
@@ -2730,6 +3144,40 @@ def test_u1_the_recorded_environment_holds_pytest_addopts(repo, monkeypatch):
     monkeypatch.setenv("PYTEST_ADDOPTS", "-p no:randomly")
     ev = repo.collect()
     assert ev.environment["variables"]["PYTEST_ADDOPTS"] == "-p no:randomly"
+
+
+@needs_monitoring
+def test_y14_the_recorded_environment_holds_plugins_and_the_users_path(repo, monkeypatch):
+    """``PYTEST_PLUGINS`` loads a plugin (an autouse fixture of one changes
+    what every test runs) and a ``PYTHONPATH`` entry of the checkout makes
+    an optional import succeed: a run without them is not the recorded one.
+    The source roots diffcone itself puts first are not the environment's."""
+    repo.commit({**PICK_FILES, "extras/fastlib.py": "", "plug.py": ""})
+    monkeypatch.setenv("PYTEST_PLUGINS", "plug")
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    monkeypatch.setenv("PYTHONPATH", str(repo.path / "extras"))
+    ev = repo.collect(rev="HEAD")  # a temporary worktree: the roots differ
+    assert ev.environment["variables"]["PYTEST_PLUGINS"] == "plug"
+    assert ev.environment["variables"]["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+    assert ev.environment["pythonpath"] == ["<checkout>/extras"]
+    assert ev.environment["flags"]["utf8_mode"] == sys.flags.utf8_mode
+
+
+def test_y14_only_the_entries_diffcone_added_leave_the_path(monkeypatch, tmp_path):
+    from diffcone import collect
+
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    plugin = tmp_path / "diffcone-plugin-x"
+    monkeypatch.setenv("DIFFCONE_COLLECT_ROOT", str(root))
+    monkeypatch.delenv("DIFFCONE_COLLECT_REPO", raising=False)
+    entries = [str(plugin), str(root / "src"), str(root / "src"), str(root), "/opt/lib"]
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(entries))
+    monkeypatch.setenv(collect.ADDED_PATH, str(root / "src"))
+    # The user's own ``src`` stays (written relative to the checkout).
+    assert collect._pythonpath() == ["<checkout>/src", "<checkout>", "/opt/lib"]
+    monkeypatch.delenv(collect.ADDED_PATH)
+    assert collect._pythonpath() == ["<checkout>/src"] * 2 + ["<checkout>", "/opt/lib"]
 
 
 def test_u1_advance_keeps_the_old_records_flags():

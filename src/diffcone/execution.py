@@ -893,6 +893,8 @@ def _checkout_env(cwd: Path, source_roots: list[str]) -> dict[str, str]:
             roots.append(str(candidate))
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = os.pathsep.join([*roots, *([existing] if existing else [])])
+    # The recorder leaves these out of the environment it compares.
+    env["DIFFCONE_ADDED_PATH"] = os.pathsep.join(roots)
     return env
 
 

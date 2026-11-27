@@ -25,9 +25,14 @@ What it records, per test (parameter cases folded into their function, as
 
 * the code objects executed in the test's setup, call and teardown, and in
   the setup of every non-function-scoped fixture the test activated
-  (credited to every such test, not only the first; and the keys of those
-  fixtures, so the fold credits what another process's setup of the same
-  fixture ran too: an xdist "compute once" fixture runs in one worker).
+  (credited to every such test, not only the first). A shared fixture is
+  recorded per instance (the node it was set up for) with the time its
+  setup started, and a test names the definitions it used with the time
+  it ended: the fold credits it with every instance of those definitions
+  set up before it ended, in any process (a later instance may reuse what
+  an earlier one computed, in a dict of the conftest or on a library
+  module; an xdist "compute once" fixture runs in one worker), ordering
+  processes by their monotonic clocks when those agree (``CLOCK``).
   ``sys.monitoring`` ``PY_START`` and ``PY_RESUME`` (a generator or
   coroutine resumed in a later test) with DISABLE, re-armed at every window
   boundary, and ``PY_THROW`` (re-entered by ``.throw()``/``.close()``);
@@ -57,9 +62,17 @@ What it records, per test (parameter cases folded into their function, as
   the fold credits it with what they ran;
 * whether it started a process another way (``os.system``, Windows,
   ``multiprocessing``; other than a ``python -c`` probe that can run no
-  project code and could not record) or a subinterpreter, or opened while
-  such a process (a pool's worker, a forkserver's child) was still
-  running (``unfollowed``): code no record names runs there;
+  project code and could not record), ran code in a subinterpreter
+  (created, or called into, wherever it was created: ``_interpreters``,
+  3.12's ``_xxsubinterpreters``, a submit to an ``InterpreterPoolExecutor``;
+  ``child.UNAUDITED_STARTS``), or opened while such a process (a pool's
+  worker, a forkserver's child) was still running (``unfollowed``): code
+  no record names runs there. A program the spawn accounting takes at its
+  name as running nothing of the project (a machine query, ``ninja``)
+  flags when its environment or directory points it at the checkout
+  (``child.unexempt``: ``FONTCONFIG_FILE``, ``GIT_DIR``, ``git -C``, a
+  stand-in on ``PATH``), and ``ninja`` unless meson-python's editable
+  loader started it (``child.meson_rebuild``);
 * whether it ran code compiled from text no file of the checkout holds (a
   doctest's examples, a ``timeit`` statement; ``child.text_code``). The
   project code other threads are in the middle of when a window opens is
@@ -67,8 +80,12 @@ What it records, per test (parameter cases folded into their function, as
   another thread (a thread started, a ``ThreadPoolExecutor`` work item
   submitted, ``asyncio``'s ``run_in_executor``) that runs after the window
   closed is credited to it too, as when the thread finishes in time
-  (``_owner``, ``late``); work handed off outside every window stays in
-  that phase;
+  (``_owner``, ``late``). Work handed off outside every window (at
+  import, by a hook) is the phase's it was handed off in, wherever and
+  whenever it runs (``_NO_WINDOW``, ``_detached``), and a pool's own
+  worker threads (``_pool_worker``: a ``ThreadPoolExecutor``'s,
+  ``multiprocessing.pool``'s, anyio's and trio's, an event loop's) belong
+  to no window: what they run is the work item's, or the window's open then;
 * how many of its cases the process collected (``pytest_itemcollected``,
   before any plugin deselects) and how many it ran, each with a sum of the
   cases' node id hashes (``cases``): the fold keeps no record of a test
@@ -114,6 +131,9 @@ Environment variables:
 ``DIFFCONE_ENV_VARIABLES``     comma-separated project variables that change
                                what tests do (pandas' ``PANDAS_FUTURE``),
                                recorded with the environment and checked
+``DIFFCONE_ADDED_PATH``        the ``PYTHONPATH`` entries diffcone put first
+                               (the source roots), left out of the
+                               environment; every other entry is in it
 ``DIFFCONE_CHECK_ENV``         check mode: the environment hash evidence was
                                recorded under; the plugin always writes
                                ``DIFFCONE_CHECK_REPORT`` (``{"match": bool,
@@ -152,6 +172,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 import types
 import zlib
 from collections.abc import Callable
@@ -181,7 +202,9 @@ FLAG_FAILED = 8
 # (``uv run`` elsewhere) hands its own to the suite.
 # ``PYTEST_ADDOPTS``: pytest arguments, which may stop the session early,
 # deselect cases or change what a test does (a conftest's own option), and
-# which no command a store records names.
+# which no command a store records names. ``PYTEST_PLUGINS`` loads plugins
+# (an autouse fixture of one changes what every test runs), and
+# ``PYTEST_DISABLE_PLUGIN_AUTOLOAD`` leaves out the installed ones.
 ENV_VARIABLES = (
     "PYTHONHASHSEED",
     "TZ",
@@ -190,7 +213,29 @@ ENV_VARIABLES = (
     "PYTHONWARNINGS",
     "VIRTUAL_ENV",
     "PYTEST_ADDOPTS",
+    "PYTEST_PLUGINS",
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
 )
+# Interpreter settings beside ``optimize`` that change what code does,
+# however they were set (a variable, ``-X``, the locale): UTF-8 mode
+# (``PYTHONUTF8``, ``-X utf8``, a C locale) is the default encoding of
+# ``open``; development mode shows warnings a suite may turn into errors.
+FLAGS = (
+    "utf8_mode",
+    "dev_mode",
+    "warn_default_encoding",
+    "int_max_str_digits",
+    "safe_path",
+    "bytes_warning",
+    "no_user_site",
+    "ignore_environment",
+    "isolated",
+)
+# The entries ``diffcone`` itself put first on ``PYTHONPATH`` (the
+# checkout's source roots, ``execution._checkout_env``), which are its own,
+# not the environment's: a recorded commit's checkout is a temporary
+# worktree.
+ADDED_PATH = "DIFFCONE_ADDED_PATH"
 
 
 def _variables() -> tuple[str, ...]:
@@ -228,19 +273,25 @@ def _editable(dist) -> str | None:
     return os.path.realpath(url.path)
 
 
-def _in_checkout(path: str) -> bool:
-    """Inside the checkout being run, or the repository it was made from
+def _checkout_roots() -> list[str]:
+    """The checkout being run, and the repository it was made from
     (``collect --rev`` runs a temporary worktree, while the project's own
-    editable install points at the repository)."""
-    roots = {
-        os.path.realpath(r)
-        for r in (
-            os.environ.get("DIFFCONE_COLLECT_ROOT") or os.getcwd(),
-            os.environ.get("DIFFCONE_COLLECT_REPO") or "",
-        )
-        if r
-    }
-    return any(path == root or path.startswith(root + os.sep) for root in roots)
+    editable install points at the repository), real paths."""
+    return sorted(
+        {
+            os.path.realpath(r)
+            for r in (
+                os.environ.get("DIFFCONE_COLLECT_ROOT") or os.getcwd(),
+                os.environ.get("DIFFCONE_COLLECT_REPO") or "",
+            )
+            if r
+        }
+    )
+
+
+def _in_checkout(path: str) -> bool:
+    """Inside the checkout being run, or the repository it was made from."""
+    return any(path == root or path.startswith(root + os.sep) for root in _checkout_roots())
 
 
 def environment() -> dict:
@@ -264,16 +315,6 @@ def environment() -> dict:
         # A sibling editable install (``pip install -e ../lib``) is not traced
         # either, but where it lives is part of what runs.
         dists.add(entry + (f" @ {local}" if local is not None else ""))
-    # The user's own entries: diffcone's plugin directory and the checkout's
-    # source roots (``collect`` puts them first; a recorded commit's checkout
-    # is a temporary worktree) are diffcone's, not the environment's.
-    pythonpath = [
-        p
-        for p in os.environ.get("PYTHONPATH", "").split(os.pathsep)
-        if p
-        and not os.path.basename(p.rstrip(os.sep)).startswith("diffcone-plugin-")
-        and not _in_checkout(os.path.realpath(p))
-    ]
     return {
         "implementation": sys.implementation.name,
         "python": sys.version,
@@ -283,8 +324,34 @@ def environment() -> dict:
         "optimize": sys.flags.optimize,
         "distributions": sorted(dists),
         "variables": {k: os.environ.get(k) for k in _variables()},
-        "pythonpath": pythonpath,
+        "pythonpath": _pythonpath(),
+        "flags": {k: getattr(sys.flags, k) for k in FLAGS if hasattr(sys.flags, k)},
     }
+
+
+def _pythonpath() -> list[str]:
+    """The user's own ``PYTHONPATH`` entries: not diffcone's plugin
+    directory, nor the source roots diffcone put first (``ADDED_PATH``). An
+    entry inside the checkout is written relative to it (``<checkout>/extras``),
+    the same whether a temporary worktree or the repository was run."""
+    entries = [
+        p
+        for p in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+        if p and not os.path.basename(p.rstrip(os.sep)).startswith("diffcone-plugin-")
+    ]
+    added = [p for p in os.environ.get(ADDED_PATH, "").split(os.pathsep) if p]
+    if added and entries[: len(added)] == added:
+        entries = entries[len(added) :]
+    out = []
+    for p in entries:
+        real = os.path.realpath(p)
+        for root in _checkout_roots():
+            if real == root or real.startswith(root + os.sep):
+                rel = os.path.relpath(real, root).replace(os.sep, "/")
+                p = "<checkout>" if rel == "." else f"<checkout>/{rel}"
+                break
+        out.append(p)
+    return out
 
 
 def environment_hash(env: dict) -> str:
@@ -351,17 +418,17 @@ import_paths: dict[str, set[str]] = {}
 import_dirs: dict[str, set[str]] = {}
 # A shared fixture's windows, one per instance: (baseid, name, scope, the
 # node it was set up for: a module's, a class's, a package's; "" for the
-# session's, which every process sets up and whose real work may run in one
-# only). A conftest's module fixture has an instance per module, and what one
-# instance's setup ran (or ran beside: a process left running) is credited
-# to the tests that used it, not to every test of every module.
+# session's), each with the time its setup started (``start``,
+# ``time.monotonic_ns``). A later instance may reuse what an earlier one
+# computed (a dict in the conftest, an attribute on a library module, a
+# warm pool; for a session fixture, a cache file another process wrote), so
+# the fold credits a test with what every instance of the fixtures it used
+# ran, in any process, except an instance set up after the test ended (its
+# ``end``), whose work cannot have reached it.
 fixture_windows: dict[tuple[str, str, str, str], dict] = {}
-# id(FixtureDef) -> the instance it last set up here, which the tests running
-# now use; a test using one this process never set up (not expected) is
-# credited with every instance's record (``_ANY_INSTANCE``).
-fixture_instances: dict[int, str] = {}
-_ANY_INSTANCE = "*"
-any_instance: set[tuple[str, str, str]] = set()
+# This process's clocks as it started (``time.time_ns``, ``time.monotonic_ns``),
+# for the fold to tell whether the processes' monotonic clocks agree.
+CLOCK = (time.time_ns(), time.monotonic_ns())
 collected: set[str] = set()  # every test collected, parameters folded
 collection_ran = False  # this process collected (an xdist controller does not)
 # Per test (parameters folded): how many of its cases this process collected
@@ -424,8 +491,18 @@ import_window = _window()
 # it runs is credited to them (``_open``): a shared fixture's window itself,
 # and a test's through ``late``, its record of what ran after its window
 # closed, written as another record of the test.
+#
+# Work handed off outside every window (at import, by a hook) has the
+# explicit owner ``_NO_WINDOW`` and the phase it was handed off in
+# (``_item.phase``, ``_THREAD_PHASE``: the module being imported, the file
+# being collected), so what it runs is that phase's wherever it runs: never
+# the windows of the test that happened to start the thread it runs on. A
+# pool's own worker threads (``_pool_worker``), which serve whatever is
+# handed to them, get no lasting owner.
 _item = threading.local()
 _THREAD_OWNER = "_diffcone_owner"
+_THREAD_PHASE = "_diffcone_phase"
+_NO_WINDOW: tuple = ()
 late: dict[str, dict] = {}
 
 
@@ -438,14 +515,52 @@ def _owner() -> tuple | None:
     return _thread_owner()
 
 
+def _this_thread():
+    # Not ``current_thread()``: for a thread ``threading`` did not start
+    # it makes and registers a dummy object.
+    return getattr(threading, "_active", {}).get(threading.get_ident())
+
+
 def _thread_owner() -> tuple | None:
     owner = getattr(_item, "owner", None)
     if owner is None:
-        # Not ``current_thread()``: for a thread ``threading`` did not start
-        # it makes and registers a dummy object.
-        thread = getattr(threading, "_active", {}).get(threading.get_ident())
-        owner = getattr(thread, _THREAD_OWNER, None)
+        owner = getattr(_this_thread(), _THREAD_OWNER, None)
     return owner
+
+
+def _here() -> tuple[str | None, str | None]:
+    """The phase outside every window as this thread sees it: (the module
+    being imported, the file being collected), those of the work handed off
+    outside every window this thread runs for first."""
+    phase = _detached()
+    if phase is not None:
+        return phase
+    return (importing[-1] if importing else None, collecting[-1] if collecting else None)
+
+
+def _detached() -> tuple[str | None, str | None] | None:
+    """For work handed off outside every window that this thread runs now,
+    the phase it was handed off in; else None."""
+    phase = getattr(_item, "phase", None)
+    if phase is None:
+        phase = getattr(_this_thread(), _THREAD_PHASE, None)
+    return phase
+
+
+def _credit_detached(i: int) -> None:
+    """Code ``i`` ran as work handed off outside every window: it is the
+    phase's that handed it off, whatever window is open now."""
+    phase = _detached()
+    if phase is None:
+        return
+    import_window["codes"].add(i)
+    module, collector = phase
+    if module:
+        import_by.setdefault(i, set()).add(module)
+    elif collector:
+        collect_by.setdefault(i, set()).add(collector)
+    else:
+        hook_codes.add(i)
 
 
 def _open() -> list:
@@ -460,29 +575,63 @@ def _open() -> list:
     return [late.setdefault(w["test"], _window()) if "test" in w else w for w in owner]
 
 
-def _run_for(owner: tuple, fn, /, *args, **kwargs):
-    """Run an executor's work item as work of ``owner``'s windows."""
-    saved = getattr(_item, "owner", None)
-    _item.owner = owner
+def _run_for(owner: tuple, phase, fn, /, *args, **kwargs):
+    """Run an executor's work item as work of ``owner``'s windows (with
+    ``_NO_WINDOW``, of ``phase``)."""
+    saved = getattr(_item, "owner", None), getattr(_item, "phase", None)
+    _item.owner, _item.phase = owner, phase
     try:
         return fn(*args, **kwargs)
     finally:
-        _item.owner = saved
+        _item.owner, _item.phase = saved
+
+
+def _pool_worker(thread) -> bool:
+    """Whether ``thread`` is a pool's own worker, which runs whatever is
+    handed to it later (by a test, a fixture, a hook) rather than work of
+    the windows open as it starts: a ``ThreadPoolExecutor``'s, started as
+    work is submitted; ``multiprocessing.pool``'s workers and handler
+    threads (a ``ThreadPool``'s work, a result callback); anyio's and
+    trio's worker threads; a thread running an event loop."""
+    if getattr(_item, "submitting", 0):
+        return True
+    cls = type(thread)
+    if cls.__name__ == "WorkerThread" and cls.__module__.split(".")[0] in ("anyio", "trio"):
+        return True
+    target = getattr(thread, "_target", None)
+    if getattr(target, "__module__", None) == "multiprocessing.pool":
+        return True
+    bound = getattr(target, "__self__", None)
+    if bound is not None:
+        kind = type(bound)
+        if kind.__name__ == "WorkerThread" and kind.__module__.split(".")[0] in ("anyio", "trio"):
+            return True
+        asyncio = sys.modules.get("asyncio")
+        loop = getattr(asyncio, "AbstractEventLoop", None)
+        if loop is not None and isinstance(bound, loop):
+            return True
+    return False
 
 
 def _install_thread_owners() -> None:
     """Note the windows each thread and each ``ThreadPoolExecutor`` work item
     is started for (``asyncio``'s ``run_in_executor`` and ``to_thread``
     submit to one): a thread finishing after its test is still the test's.
-    An ``InterpreterPoolExecutor``'s work runs in another interpreter, which
-    nothing records (``unfollowed``), and is left alone."""
+    Outside every window, the phase instead (``_NO_WINDOW``). An
+    ``InterpreterPoolExecutor``'s work runs in another interpreter, which
+    nothing records: submitting it flags, and so does each call into an
+    interpreter (``child.UNAUDITED_STARTS``)."""
     start = threading.Thread.start
 
     def started(self, *args, **kwargs):
         try:
-            owner = _owner()
-            if owner is not None:
-                setattr(self, _THREAD_OWNER, owner)
+            if not _pool_worker(self):
+                owner = _owner()
+                if owner:
+                    setattr(self, _THREAD_OWNER, owner)
+                else:  # started outside every window: the phase's
+                    setattr(self, _THREAD_OWNER, _NO_WINDOW)
+                    setattr(self, _THREAD_PHASE, _here())
         except Exception as exc:
             _error("thread", exc)
         return start(self, *args, **kwargs)
@@ -493,15 +642,26 @@ def _install_thread_owners() -> None:
     submit = futures_thread.ThreadPoolExecutor.submit
 
     def submitted(self, fn, /, *args, **kwargs):
+        owner = phase = None
         try:
-            owner = _owner()
             interpreters = sys.modules.get("concurrent.futures.interpreter")
             pool = getattr(interpreters, "InterpreterPoolExecutor", None)
-            if owner is not None and not (pool is not None and isinstance(self, pool)):
-                return submit(self, _run_for, owner, fn, *args, **kwargs)
+            if pool is not None and isinstance(self, pool):
+                _flag(cause=f"{type(self).__name__}.submit ({_site()})")
+            else:
+                owner = _owner()
+                if owner is None or not owner:
+                    owner, phase = _NO_WINDOW, _here()
         except Exception as exc:
             _error("thread", exc)
-        return submit(self, fn, *args, **kwargs)
+        # The worker thread a submit starts is the pool's (``_pool_worker``).
+        _item.submitting = getattr(_item, "submitting", 0) + 1
+        try:
+            if owner is None:
+                return submit(self, fn, *args, **kwargs)
+            return submit(self, _run_for, owner, phase, fn, *args, **kwargs)
+        finally:
+            _item.submitting -= 1
 
     futures_thread.ThreadPoolExecutor.submit = submitted
 
@@ -512,6 +672,8 @@ def _merge(into: dict, window: dict) -> None:
     for key in _SETS:
         into[key] |= window[key]
     into["flags"] |= window["flags"]
+    if "end" in window:
+        into["end"] = max(into.get("end", 0), window["end"])
 
 
 def _serialised(window: dict) -> dict:
@@ -520,6 +682,11 @@ def _serialised(window: dict) -> dict:
     data: dict = {key: sorted(window[key]) for key in _SETS if key != "spawns"}
     data["spawns"] = _spawn_list(window["spawns"])
     data["flags"] = window["flags"]
+    # A test's: when its last case ended; a shared fixture instance's: when
+    # its setup started (``fixture_windows``).
+    for key in ("end", "start"):
+        if key in window:
+            data[key] = window[key]
     return data
 
 
@@ -540,6 +707,7 @@ def _credit_rows(rows: list, paths: list) -> None:
                 import_by.setdefault(i, set()).add(importing[-1])
             else:
                 _outside(i)
+        _credit_detached(i)
     for rel in paths:
         _touch(os.path.join(_root, rel))
 
@@ -589,6 +757,12 @@ def _flag(flag: int = FLAG_SUBPROCESS, cause: str | Callable[[], str] = "") -> N
         w["flags"] |= flag
     if not opened:
         import_flagged.add(importing[-1] if importing else "")
+    detached = _detached()
+    if detached is not None:
+        import_window["flags"] |= flag
+        import_flagged.add(detached[0] or "")
+        if not any(w is import_window for w in windows):
+            windows = [*windows, import_window]
     if flag != FLAG_SUBPROCESS:
         return
     try:
@@ -752,6 +926,8 @@ def _on_start(code, offset):
             mon.restart_events()
         elif importing:
             import_by.setdefault(i, set()).add(importing[-1])
+        if code.co_name != "<module>":
+            _credit_detached(i)
     except Exception as exc:
         _error("PY_START", exc)
     return mon.DISABLE
@@ -770,6 +946,7 @@ def _on_resume(code, offset):
             w["codes"].add(i)
         if not opened and not importing and collecting and collecting[-1]:
             collect_by.setdefault(i, set()).add(collecting[-1])
+        _credit_detached(i)
     except Exception as exc:
         _error("PY_RESUME", exc)
     return mon.DISABLE
@@ -790,6 +967,7 @@ def _on_throw(code, offset, exc):
             w["codes"].add(i)
         if not opened and not importing and collecting and collecting[-1]:
             collect_by.setdefault(i, set()).add(collecting[-1])
+        _credit_detached(i)
     except Exception as err:
         _error("PY_THROW", err)
 
@@ -928,7 +1106,15 @@ def _touch(path, listing: bool = False, own_source: bool = False, scanned: bool 
             spellings = {s + child.SHOWN for s in spellings}
         for w in opened:
             w["dirs" if listing else "paths"].update(spellings)
-    elif actor in ("project", "library"):
+    detached = _detached()
+    if detached is not None and actor in ("project", "library"):
+        # Work handed off outside every window: its phase's too.
+        seen = import_dirs if listing else import_paths
+        module, collector = detached
+        phase = module or ("/" + collector if collector else "")
+        for spelling in spellings:
+            seen.setdefault(spelling, set()).add(phase)
+    if not opened and actor in ("project", "library"):
         # Outside every test: project code at import (a parametrize list
         # globbed from a directory), while a test module is collected or in
         # a hook, or a library's top level run by such an import (or by a
@@ -982,8 +1168,13 @@ def _audit(event, args):
             global _inert_pending
             if child.in_popen(event, args):
                 # Accounted when it has started (_spawned).
-                if event == "subprocess.Popen" and _inert_probe(event, args):
-                    child.popen.inert = True
+                if event == "subprocess.Popen":
+                    if _inert_probe(event, args):
+                        child.popen.inert = True
+                    # A program taken at its name, pointed at the checkout.
+                    why = child.unexempt(args, ROOTS, ENVIRONMENTS, sys._getframe(1))
+                    if why:
+                        _flag(cause=why)
             elif event == "_winapi.CreateProcess" and _inert_pending:
                 # The process an inert ``subprocess.Popen`` just judged
                 # (Windows raises both events for one process).
@@ -1105,7 +1296,12 @@ def _inert_probe(event: str, args: tuple) -> bool:
     ):
         return True
     if runs.lower().removesuffix(".exe") == tool_name and child.system_query(argv):
-        return True
+        # Unless the environment or the directory points it at the checkout.
+        if event == "subprocess.Popen":
+            program, cwd = executable, args[2] if len(args) > 2 else None
+        else:
+            program, cwd = args[0] if args else None, None
+        return child.pointed(argv, program, cwd, env, ROOTS, ENVIRONMENTS) is None
     if not (_INTERPRETER.fullmatch(name) or program == sys.executable):
         return False
     if not _INTERPRETER.fullmatch(runs) and executable != sys.executable:
@@ -1157,6 +1353,9 @@ def _spawned(pid: int, start: int, argv: list[str] | None, inert: bool = False) 
                 w["spawns"].add(spawn)
         else:
             import_spawns.append((spawn, importing[-1] if importing else ""))
+        detached = _detached()
+        if detached is not None:
+            import_spawns.append((spawn, detached[0] or ""))
         live.append(spawn)
         accounted[pid] = start
     except Exception as exc:
@@ -1280,7 +1479,7 @@ def _flag_calls(module, name: str) -> None:
     def flagged(*args, **kwargs):
         _flag(cause=f"{module.__name__}.{name}")
         result = original(*args, **kwargs)
-        if isinstance(result, int):
+        if isinstance(result, int) and (module.__name__, name) in child.PID_STARTS:
             # A forkserver or resource tracker: flagged here, and the
             # processes the forkserver forks are followed by pid.
             known.add(result)
@@ -1705,11 +1904,13 @@ def pytest_fixture_setup(fixturedef, request):
         try:
             instance = request.node.nodeid
         except Exception as exc:
-            instance = _ANY_INSTANCE
+            instance = "*"
             _error("fixture_setup", exc)
-    fixture_instances[id(fixturedef)] = instance
     key = (fixturedef.baseid, fixturedef.argname, fixturedef.scope, instance)
-    w = fixture_windows.setdefault(key, _window())
+    w = fixture_windows.get(key)
+    if w is None:
+        w = fixture_windows[key] = _window()
+        w["start"] = time.monotonic_ns()
     try:
         _unaccounted_children()
     except Exception as exc:
@@ -1738,17 +1939,9 @@ def fixture_key(key: tuple[str, ...]) -> str:
 
 
 def _fixture_records() -> dict[str, dict]:
-    """The shared fixtures' records by key, an instance's each, and for a
-    fixture some test used without this process having seen which instance
-    (``_ANY_INSTANCE``) the union of all of its instances."""
-    records = {fixture_key(key): _serialised(w) for key, w in sorted(fixture_windows.items())}
-    for base in sorted(any_instance):
-        union = _window()
-        for key, w in fixture_windows.items():
-            if key[:3] == base:
-                _merge(union, w)
-        records[fixture_key((*base, _ANY_INSTANCE))] = _serialised(union)
-    return records
+    """The shared fixtures' records by key, an instance's each, with the
+    time its setup started."""
+    return {fixture_key(key): _serialised(w) for key, w in sorted(fixture_windows.items())}
 
 
 def _drop(window: dict) -> None:
@@ -1828,21 +2021,13 @@ def pytest_runtest_protocol(item, nextitem):
             for name in getattr(item, "fixturenames", ()):
                 if info is not None:
                     defs.extend(info.name2fixturedefs.get(name, ()))
+            # The fixture definitions it used: the fold credits it with
+            # what their instances ran (``fixture_windows``).
             for fixturedef in defs:
                 if fixturedef.scope != "function":
                     base = (fixturedef.baseid, fixturedef.argname, fixturedef.scope)
-                    instance = fixture_instances.get(id(fixturedef), _ANY_INSTANCE)
-                    if instance == _ANY_INSTANCE:
-                        any_instance.add(base)
-                        shared = _window()
-                        for key, w in fixture_windows.items():
-                            if key[:3] == base:
-                                _merge(shared, w)
-                    else:
-                        shared = fixture_windows.get((*base, instance))
-                    mine["fixtures"].add(fixture_key((*base, instance)))
-                    if shared:
-                        _merge(mine, shared)
+                    mine["fixtures"].add(fixture_key(base))
+            mine["end"] = time.monotonic_ns()
             if writer is not None:
                 writer.add(fold_nodeid(item.nodeid), mine)
             _count_case(item.nodeid, 2)
@@ -1927,6 +2112,7 @@ def _finish():
         # What each shared fixture ran here: a fixture computed once for
         # every worker (a file lock and a cache file) runs its code in one.
         "fixtures": _fixture_records(),
+        "clock": list(CLOCK),
         "environment": env,
         "environment_hash": environment_hash(env),
         "environment_at_start": environment_at_start,

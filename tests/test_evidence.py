@@ -833,6 +833,26 @@ def test_w28_optimize_and_pythonpath_differences_are_reported():
 
 
 @needs_monitoring
+def test_y14_interpreter_flags_and_plugin_variables_differences_are_reported():
+    """UTF-8 mode (``PYTHONUTF8``, ``-X utf8``, a C locale) and the plugins
+    ``PYTEST_PLUGINS`` loads change what tests do: a difference there is
+    named."""
+    from diffcone.collect import environment
+    from diffcone.evidence import environment_differences
+
+    recorded = environment()
+    utf8 = recorded["flags"]["utf8_mode"]
+    met = {**recorded, "flags": {**recorded["flags"], "utf8_mode": 1 - utf8}}
+    assert environment_differences(recorded, met) == [
+        f"sys.flags.utf8_mode: {utf8!r} recorded, {1 - utf8!r} now"
+    ]
+    variables = {**recorded["variables"], "PYTEST_PLUGINS": "plug"}
+    assert environment_differences(recorded, {**recorded, "variables": variables}) == [
+        f"PYTEST_PLUGINS: {recorded['variables']['PYTEST_PLUGINS']!r} recorded, 'plug' now"
+    ]
+
+
+@needs_monitoring
 def test_w28_every_recorded_field_has_a_difference_line():
     """Whatever field differs, the list names it; a field only one side has
     (a variable added with ``--env-var``, a later recorder's field) too."""
