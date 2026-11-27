@@ -10,7 +10,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable, Sequence
 
-from diffcone.indexer.syntax import DEF_NODES, FUNC_NODES, iter_scope_statements
+from diffcone.indexer.syntax import DEF_NODES, FUNC_NODES, _flatten_chain, iter_scope_statements
 from diffcone.indexer.uses import scan_names
 
 # Synthetic key in a literal table: what *indexing* the literal bound to NAME
@@ -384,6 +384,104 @@ def _module_containers(tree: ast.Module) -> frozenset[str]:
             names.add(node.target.id)
         stack.extend(ast.iter_child_nodes(node))
     return frozenset(names)
+
+
+def class_owned(nodes: list[ast.ClassDef]) -> frozenset[str]:
+    """The attributes the class gives its instances of their own, in each
+    ``if``/``else`` variant of its statement (``ClassScope.owned``;
+    ``_instance_owned``)."""
+    found = [_instance_owned(node) for node in nodes]
+    return frozenset.intersection(*found) if found else frozenset()
+
+
+def class_init_delegates(nodes: list[ast.ClassDef]) -> bool:
+    """Whether the class's own ``__init__`` (in any variant of its
+    statement) may run a base's: it calls ``super().__init__(...)`` or
+    ``<something>.__init__(self, ...)`` (``ClassScope.init_delegates``)."""
+    for node in nodes:
+        for stmt in node.body:
+            if not isinstance(stmt, FUNC_NODES) or stmt.name != "__init__":
+                continue
+            params = stmt.args.posonlyargs + stmt.args.args
+            me = params[0].arg if params else None
+            for inner in _own_scope_nodes(stmt.body):
+                if not (
+                    isinstance(inner, ast.Call)
+                    and isinstance(inner.func, ast.Attribute)
+                    and inner.func.attr == "__init__"
+                ):
+                    continue
+                receiver = inner.func.value
+                if (
+                    isinstance(receiver, ast.Call)
+                    and isinstance(receiver.func, ast.Name)
+                    and receiver.func.id == "super"
+                ):
+                    return True
+                first = inner.args[0] if inner.args else None
+                if isinstance(first, ast.Name) and first.id == me:
+                    return True
+    return False
+
+
+# Calls in a class body giving each instance its own object (dataclasses,
+# attrs, pydantic).
+_FIELD_CALLS = frozenset({"field", "ib", "attrib", "Field", "PrivateAttr"})
+
+
+def _instance_owned(node: ast.ClassDef) -> frozenset[str]:
+    """The attributes the class gives its instances of their own: its
+    ``__init__`` stores ``self.<attr>`` (not in a function nested in it,
+    which may never run), or the class body declares it only (``attr:
+    T``) or as a per-instance field. Another method rebinding ``self.<attr>``
+    (``reset``), or a classmethod rebinding ``cls.<attr>``, gives none: an
+    instance that never calls it shares the class's object (audit round 9,
+    Y16). Whether an instance runs that ``__init__`` is the reader's
+    business (references._class_held)."""
+    owned: set[str] = set()
+    for stmt in node.body:
+        if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+            targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+            value = stmt.value
+            callee = _flatten_chain(value.func) if isinstance(value, ast.Call) else None
+            if value is None or (callee is not None and callee[-1] in _FIELD_CALLS):
+                owned.update(t.id for t in targets if isinstance(t, ast.Name))
+        elif isinstance(stmt, FUNC_NODES) and stmt.name == "__init__":
+            params = stmt.args.posonlyargs + stmt.args.args
+            if not params:
+                continue
+            me = params[0].arg
+            for inner in _own_scope_nodes(stmt.body):
+                if isinstance(inner, ast.Assign):
+                    targets = inner.targets
+                elif isinstance(inner, ast.AnnAssign) and inner.value is not None:
+                    targets = [inner.target]
+                else:
+                    continue
+                for target in targets:
+                    for t in ast.walk(target):
+                        if (
+                            isinstance(t, ast.Attribute)
+                            and isinstance(t.value, ast.Name)
+                            and t.value.id == me
+                            and isinstance(t.ctx, ast.Store)
+                        ):
+                            owned.add(t.attr)
+    return frozenset(owned)
+
+
+def _own_scope_nodes(body: list[ast.stmt]) -> list[ast.AST]:
+    """Every node of ``body`` outside the functions, lambdas and classes
+    nested in it."""
+    found: list[ast.AST] = []
+    stack: list[ast.AST] = list(body)
+    while stack:
+        node = stack.pop()
+        found.append(node)
+        if isinstance(node, (*FUNC_NODES, ast.Lambda, ast.ClassDef)):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return found
 
 
 def class_tables(nodes: list[ast.ClassDef]) -> frozenset[str]:

@@ -470,11 +470,10 @@ class _ReferenceCollector(ast.NodeVisitor):
         # Name -> what this module's star imports may bind it to.
         self._star_names: dict[str, list[str]] = {}
         # Per function, lambda or comprehension: what its bindings give each
-        # name, and the names it binds; per class, its ``class`` statement
-        # (``_alias_roots``, ``_class_node``). The node is kept with each.
+        # name, and the names it binds (``_alias_roots``). The node is kept
+        # with each.
         self._source_maps: dict[int, tuple[ast.AST, dict[str, list[tuple[ast.expr, str]]]]] = {}
         self._bound_maps: dict[int, tuple[ast.AST, set[str]]] = {}
-        self._class_nodes: dict[str, tuple[ast.Module, ast.ClassDef | None]] = {}
         # What ``_alias_roots`` found for a name in a context (the scope and
         # the _BINDERS being visited), with the alias keys it looked at: the
         # ones the caller's ``seen`` did not cut, and the ones it did. A name
@@ -1841,9 +1840,8 @@ class _ReferenceCollector(ast.NodeVisitor):
         assert cls is not None
         node = self.indexer.resolve_chain(chain, self.scope)
         attr = chain[1]
-        # A method of the class storing ``self.<attr>`` gives the instance an
-        # object of its own there, unless that object is shared (``-``);
-        # otherwise the class may be given it elsewhere (``.``).
+        # An attribute every instance gets of its own (``_class_held``) is
+        # its own object there, unless what is bound is shared (``-``).
         owned = f"{INSTANCE}{SHARED_ONLY}{attr}:{cls}"
         if not isinstance(node, Resolved):
             if self._class_held(cls, attr):
@@ -1860,38 +1858,40 @@ class _ReferenceCollector(ast.NodeVisitor):
         return found
 
     def _class_held(self, cid: str, attr: str) -> bool:
-        """Whether ``attr``, which class ``cid``'s body binds, is the class's
-        own object for its instances: neither that class nor the class of
-        ``self`` stores ``self.<attr>`` in a method, or binds it to a field
-        each instance gets (``field(...)``, an annotation alone). A class of
-        another module is not read here: its attribute counts as held."""
-        for cls in dict.fromkeys((cid, self.scope.self_class)):
-            if cls is not None and attr in self._owned_attributes(cls):
+        """Whether ``attr``, which class ``cid``'s body binds, may be the
+        class's own object for an instance ``self`` is: unless the
+        ``__init__`` an instance of the class of ``self`` or of any in-scope
+        subclass of it runs binds it on the instance, or it is a field each
+        instance gets (``field(...)``, an annotation alone:
+        ``ClassScope.owned``). A subclass's ``__init__`` that runs no
+        base's (``ClassScope.init_delegates``) leaves the attribute the
+        class's (audit round 9, Y5, Y16)."""
+        cls = self.scope.self_class
+        if cls is None:
+            return True
+        key = (cls, attr)
+        held = self.indexer._class_held.get(key)
+        if held is None:
+            indexer = self.indexer
+            family = (cls, *indexer._descendants.get(cls, ()))
+            held = not all(self._instance_owns(c, attr) for c in family)
+            indexer._class_held[key] = held
+        return held
+
+    def _instance_owns(self, cls: str, attr: str) -> bool:
+        """Whether an instance of in-scope class ``cls`` gets ``attr`` of its
+        own: along the MRO, a class giving it (``ClassScope.owned``) before
+        one whose ``__init__`` runs no base's. Read off pass 1's records of
+        every class: the same answer for every module asking, whichever was
+        resolved first in the build or came from the module cache (Y5)."""
+        scopes = self.indexer.class_scopes
+        for c in self.indexer._mro(cls):
+            cscope = scopes[c]
+            if attr in cscope.owned:
+                return True
+            if "__init__" in cscope.members and not cscope.init_delegates:
                 return False
-        return True
-
-    def _owned_attributes(self, cid: str) -> frozenset[str]:
-        """``_instance_owned`` of class ``cid`` of this module, one walk of
-        its body per build (a class of another module: none)."""
-        kept = self.indexer._owned_attributes.get(cid)
-        if kept is None:
-            node = self._class_node(cid)
-            if node is None:
-                return frozenset()
-            kept = self.indexer._owned_attributes[cid] = _instance_owned(node)
-        return kept
-
-    def _class_node(self, cid: str) -> ast.ClassDef | None:
-        """The ``class`` statement of an in-scope class of this module."""
-        module = self.scope.module
-        symbol = self.indexer.index.symbols.get(cid)
-        if module.tree is None or symbol is None or symbol.module != module.name:
-            return None
-        found = self._class_nodes.get(cid)
-        if found is None or found[0] is not module.tree:
-            path = cid[len(module.name) + 1 :].split(".")
-            found = self._class_nodes[cid] = (module.tree, _find_class(module.tree.body, path))
-        return found[1]
+        return False
 
     def _class_named(self, expr: ast.expr, variables: bool = False, depth: int = 0) -> str | None:
         """The in-scope class ``expr`` names: a class (``Store``), a
@@ -4609,64 +4609,6 @@ def instance_root(root: str) -> tuple[str, str] | None:
         if root.startswith(prefix):
             how, _, cls = root[len(prefix) :].partition(":")
             return how, cls
-    return None
-
-
-# Calls in a class body giving each instance its own object (dataclasses,
-# attrs, pydantic).
-_FIELD_CALLS = frozenset({"field", "ib", "attrib", "Field", "PrivateAttr"})
-
-
-def _instance_owned(node: ast.ClassDef) -> frozenset[str]:
-    """The attributes instances of the class get of their own: a method
-    stores ``self.<attr>``, or the class body declares it only (``attr:
-    T``) or as a per-instance field."""
-    owned: set[str] = set()
-    for stmt in node.body:
-        if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
-            targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
-            value = stmt.value
-            callee = _flatten_chain(value.func) if isinstance(value, ast.Call) else None
-            if value is None or (callee is not None and callee[-1] in _FIELD_CALLS):
-                owned.update(t.id for t in targets if isinstance(t, ast.Name))
-        elif isinstance(stmt, FUNC_NODES):
-            params = stmt.args.posonlyargs + stmt.args.args
-            if not params:
-                continue
-            me = params[0].arg
-            for inner in ast.walk(stmt):
-                if isinstance(inner, ast.Assign):
-                    targets = inner.targets
-                elif isinstance(inner, ast.AnnAssign) and inner.value is not None:
-                    targets = [inner.target]
-                else:
-                    continue
-                for target in targets:
-                    for t in ast.walk(target):
-                        if (
-                            isinstance(t, ast.Attribute)
-                            and isinstance(t.value, ast.Name)
-                            and t.value.id == me
-                            and isinstance(t.ctx, ast.Store)
-                        ):
-                            owned.add(t.attr)
-    return frozenset(owned)
-
-
-def _find_class(body: list[ast.stmt], path: list[str]) -> ast.ClassDef | None:
-    """The ``class`` statement ``path`` names (classes nested in classes),
-    in ``body`` or a block of it (``if``, ``try``)."""
-    stack = list(body)
-    while stack:
-        stmt = stack.pop(0)
-        if isinstance(stmt, ast.ClassDef):
-            if stmt.name == path[0]:
-                return stmt if len(path) == 1 else _find_class(stmt.body, path[1:])
-        elif not isinstance(stmt, FUNC_NODES):
-            for field in ("body", "orelse", "finalbody", "handlers"):
-                block = getattr(stmt, field, None)
-                if isinstance(block, list):
-                    stack.extend(n for n in block if isinstance(n, (ast.stmt, ast.ExceptHandler)))
     return None
 
 

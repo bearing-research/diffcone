@@ -362,7 +362,10 @@ class _Output:
     # place, ``*`` anything else (T23).
     param_flavors: set[tuple[str, str, str]] = field(default_factory=set)
     # The ``passes`` handing a parameter itself on (not an item or an
-    # attribute of it): the callee's writes are the caller's (T23).
+    # attribute of it): the callee's writes are the caller's (T23); and
+    # those whose receiver is a module variable itself (``LOG.info(m)``),
+    # for the variable receiver rule (writes.apply_writes; audit round 9,
+    # Y17).
     whole_passes: set[tuple[str, str, str, str, str, bool]] = field(default_factory=set)
     # (function, parameter, class, how): a fresh object holding the
     # parameter (``Box(p)``, ``self.makeRecord(..., msg, args)``: class
@@ -875,6 +878,8 @@ def _facts_to_dict(
                 "adds_no_state": c.adds_no_state,
                 "declared": sorted(c.declared),
                 "tables": sorted(c.tables),
+                "owned": sorted(c.owned),
+                "init_delegates": c.init_delegates,
                 "match_args": list(c.match_args) if c.match_args is not None else None,
                 "stateless": list(c.stateless) if c.stateless is not None else None,
                 "immutables": (
@@ -910,7 +915,15 @@ def _facts_to_dict(
             for s in symbols
         ],
         [
-            [c["id"], c["enclosing"], c["members"], c["bindings"], c["match_args"]]
+            [
+                c["id"],
+                c["enclosing"],
+                c["members"],
+                c["bindings"],
+                c["match_args"],
+                c["owned"],
+                c["init_delegates"],
+            ]
             for c in record["classes"]
         ],
     ]

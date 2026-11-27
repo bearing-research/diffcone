@@ -6155,3 +6155,191 @@ def test_u19_a_lambda_writing_module_state_writes_it_for_its_callers(repo, case)
     module's own hash covers, made once at import."""
     store, fill = U19_CASES[case]
     assert _left_by(repo, store, fill, "m.first() == 2") == LEFT_ALL
+
+
+# An attribute a class body binds to a mutable value is the class's object,
+# shared by every instance, until something gives the instance one of its
+# own: ``__init__`` binding it on ``self``. Another method rebinding it
+# (``reset``), a classmethod rebinding it on ``cls``, or a function nested in
+# ``__init__`` leave the instances that never run it sharing the class's
+# (audit round 9, Y16).
+REBOUND_ELSEWHERE = {
+    "a method": "    def reset(self):\n        self.items = []\n",
+    "a classmethod": "    @classmethod\n    def reset(cls):\n        cls.items = []\n",
+    "a function nested in __init__": (
+        "    def __init__(self):\n        def reset():\n            self.items = []\n\n"
+        "        self.reset = reset\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(REBOUND_ELSEWHERE))
+def test_y16_an_attribute_rebound_outside_init_is_still_the_class_s(repo, case):
+    state = (
+        f"class Store:\n    items = []\n\n{REBOUND_ELSEWHERE[case]}\n"
+        "    def push(self, x):\n        self.items.append(x)\n\n\n"
+        "def peek(k):\n    return Store.items\n\n\n"
+        "def fill(k):\n    Store().push('x')\n"
+    )
+    assert _state_plan(repo, state) == STATE_SELECTED
+
+
+def test_y16_an_attribute_init_binds_is_still_the_instance_s_own(repo):
+    """The bound of the rule above: with ``__init__`` binding it (another
+    method rebinding it too), the instance's list is its own."""
+    state = (
+        "class Store:\n    items = []\n\n    def __init__(self):\n        self.items = []\n\n"
+        "    def reset(self):\n        self.items = []\n\n"
+        "    def push(self, x):\n        self.items.append(x)\n\n\n"
+        "def peek(k):\n    return Store.items\n\n\n"
+        "def fill(k):\n    Store().push('x')\n"
+    )
+    assert _state_plan(repo, state) == {"tests/test_a.py::test_a"}
+
+
+SUBCLASS_INIT = (
+    "class Store:\n    items = []\n\n    def __init__(self):\n        self.items = []\n\n\n"
+    "class Sub(Store):\n    def __init__(self):\n        {init}\n\n"
+    "    def push(self, x):\n        self.items.append(x)\n\n\n"
+    "def peek(k):\n    return Store.items\n\n\n"
+    "def fill(k):\n    Sub().push('x')\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("init", "want"),
+    [
+        ("pass", STATE_SELECTED),  # Store.__init__ never runs: Sub() shares Store.items
+        ("super().__init__()", {"tests/test_a.py::test_a"}),
+        ("Store.__init__(self)", {"tests/test_a.py::test_a"}),
+    ],
+    ids=["skipping the base's", "running the base's", "calling the base's by name"],
+)
+def test_y16_what_a_subclass_s_init_runs_decides_whose_attribute_it_is(repo, init, want):
+    """``self.items`` in ``Sub.push`` is the instance's own only when the
+    ``__init__`` a ``Sub`` runs binds it: a subclass's own ``__init__``
+    running no base's leaves it ``Store.items``."""
+    assert _state_plan(repo, SUBCLASS_INIT.format(init=init)) == want
+
+
+# A method called on what a variable or class holds (``H.registry.push(x)``,
+# ``LOG.registry.push(x)``) is not the variable's own: whatever the variable
+# is (a class with a library base and no methods, a library logger), the
+# object may be a project class's, and the call takes any method of its
+# name. A writer that ``setattr(type(o), name, v)`` makes of every class
+# counts in what the variable may be, its writes kept as shared lists or one
+# by one (audit round 9, Y6, Y17).
+HANDLERS = "import logging\n\n\nclass H(logging.Handler):\n    pass\n"
+REGISTRY_STORE = (
+    "class Store:\n    def __init__(self):\n        self.data = []\n\n"
+    "    def push(self, x):\n        self.data.append(x)\n"
+)
+REGISTRY_SETUP = "from pkg.handlers import H\nfrom pkg.store import Store\n\nH.registry = Store()\n"
+REGISTRY_USE = "from pkg.handlers import H\nimport pkg.setup\n\n\n{extra}def use():\n    {call}\n"
+POKE = "def poke(o, name):\n    setattr(type(o), name, 1)\n\n\n"
+
+
+def _registry_plan(repo, use, setup=REGISTRY_SETUP, reader="H.registry.data"):
+    files = {
+        **UNRELATED_BASE,
+        "pkg/handlers.py": HANDLERS,
+        "pkg/store.py": REGISTRY_STORE,
+        "pkg/setup.py": setup,
+        "pkg/use.py": use,
+        "tests/test_a.py": "from pkg.use import use\n\n\ndef test_a():\n    use()\n",
+        "tests/test_b.py": (
+            "from pkg.handlers import H\nimport pkg.setup\n\n\n"
+            f"def test_b():\n    assert {reader} == [1]\n"
+        ),
+    }
+    base = repo.commit(files)
+    head = repo.commit({"pkg/use.py": use.replace("push(1)", "push(2)")})
+    return selected(repo.plan(base, head, [UNRELATED_BENCH], discover_runners=["pytest"]))
+
+
+def test_y6_a_writer_of_every_class_counts_in_what_a_class_may_be(repo):
+    """``poke`` may give ``H`` any attribute: ``H`` is no library-only
+    object, with its writes kept as one shared list as with them made one
+    by one."""
+    use = REGISTRY_USE.format(extra=POKE, call="H.registry.push(1)")
+    assert _registry_plan(repo, use) == {"tests/test_a.py::test_a", "tests/test_b.py::test_b"}
+
+
+@pytest.mark.parametrize(
+    ("setup", "call", "reader"),
+    [
+        (REGISTRY_SETUP, "H.registry.push(1)", "H.registry.data"),
+        (
+            REGISTRY_SETUP.replace("H.registry = Store()", "setattr(H, 'registry', Store())"),
+            "H.registry.push(1)",
+            "H.registry.data",
+        ),
+        (
+            "import logging\nfrom pkg.store import Store\n\n"
+            "LOG = logging.getLogger('x')\nLOG.registry = Store()\n",
+            "pkg.setup.LOG.registry.push(1)",
+            "pkg.setup.LOG.registry.data",
+        ),
+        (
+            "from pkg.store import Store\n\nREG = {'r': Store()}\n",
+            "pkg.setup.REG['r'].push(1)",
+            "pkg.setup.REG['r'].data",
+        ),
+    ],
+    ids=[
+        "a class attribute given elsewhere",
+        "setattr",
+        "a logger's attribute",
+        "a display's item",
+    ],
+)
+def test_y17_a_method_called_on_what_a_variable_holds_is_any_of_its_name(repo, setup, call, reader):
+    use = REGISTRY_USE.format(extra="", call=call)
+    assert _registry_plan(repo, use, setup, reader) == {
+        "tests/test_a.py::test_a",
+        "tests/test_b.py::test_b",
+    }
+
+
+def test_y17_a_method_called_on_a_logger_itself_is_still_the_library_s(repo):
+    """The bound of the rule above: ``LOG.push(1)`` on a library logger
+    runs none of the project's ``push`` methods (W4)."""
+    setup = (
+        "import logging\nfrom pkg.store import Store\n\nLOG = logging.getLogger('x')\nH = Store()\n"
+    )
+    use = "import pkg.setup\n\n\ndef use():\n    pkg.setup.LOG.push(1)\n"
+    assert _registry_plan(repo, use, setup, "pkg.setup.H.data") == {"tests/test_a.py::test_a"}
+
+
+# A module variable written through a log call's callbacks (an ``os.environ``
+# store the handler makes, read by a module's top-level code) depends on the
+# sites directly; a site whose other writes are one hub in both revisions
+# keeps that edge as well (audit round 9, Y7). ``mode`` reads the store too,
+# so the sites' callbacks are one pseudo-node (model.LOG_CALLBACKS).
+LOGGING_SITES = (
+    "import logging\nimport os\n\nS1 = []\nS2 = []\n\n\n"
+    "class H(logging.Handler):\n    def emit(self, record):\n"
+    "        os.environ['DC_MODE'] = record.getMessage()\n\n\n"
+    "LOG = logging.getLogger('dcx')\nLOG.setLevel(logging.INFO)\nLOG.addHandler(H())\n\n\n"
+    "def w1():\n    S1.append(1)\n    S2.append(1)\n    LOG.info('b')\n\n\n"
+    "def w2():\n    S1.append(2)\n    S2.append(2)\n    LOG.info('c')\n"
+)
+
+
+def test_y7_a_module_read_of_a_log_callback_s_write_reaches_a_site_in_a_hub(repo):
+    files = {
+        **UNRELATED_BASE,
+        "pkg/log.py": LOGGING_SITES,
+        "pkg/conf.py": (
+            "import os\n\nif os.environ.get('DC_MODE') == 'b':\n    FLAG = 1\n"
+            "else:\n    FLAG = 0\n\n\n"
+            "def mode():\n    return os.environ.get('DC_MODE')\n"
+        ),
+        "tests/test_a.py": "def test_a():\n    from pkg.log import w1\n\n    w1()\n",
+        "tests/test_b.py": "def test_b():\n    import pkg.conf\n\n    assert pkg.conf.FLAG == 1\n",
+    }
+    base = repo.commit(files)
+    head = repo.commit({"pkg/log.py": LOGGING_SITES.replace("LOG.info('b')", "LOG.info('z')")})
+    plan = repo.plan(base, head, [UNRELATED_BENCH], discover_runners=["pytest"])
+    assert selected(plan) == {"tests/test_a.py::test_a", "tests/test_b.py::test_b"}
+    assert path_ids(reason(plan, "tests/test_b.py::test_b"))[-2:] == ["pkg.conf", "pkg.log.w1"]

@@ -454,3 +454,47 @@ def test_r17_positional_patterns_without_match_args_read_any_attribute(repo):
         "    @property\n    def y(self):\n        return {y}\n"
     )
     _api_scenario(repo, mod.format(y=1), MATCH.format(pattern="C(1)"), mod.format(y=2), None)
+
+
+# --------------------------------------------------------------------------- another module's base
+# Whether ``self.<attr>`` in a method is the class attribute a base binds or
+# the instance's own object is decided by the module resolving the method;
+# a base of another module counts as giving its instances nothing of their
+# own, whichever module the build resolved first or loaded from the module
+# cache (audit round 9, Y5).
+OWNING_BASE = (
+    "class C:\n    items = []\n\n    def __init__(self):\n        self.items = []\n\n"
+    "    def add(self, x):\n        self.items.append(x)\n"
+)
+SKIPPING_SUBCLASS = (
+    "from pkg.a import C\n\n\nclass D(C):\n    def __init__(self):\n        pass\n\n"
+    "    def push(self, x):\n        self.items.append(x)\n"
+)
+
+
+def test_y5_a_base_of_another_module_counts_the_same_whichever_module_resolves_first(repo):
+    """``D.__init__`` skips ``C.__init__``, so ``D().push(1)`` appends to
+    ``C.items`` itself: its readers depend on ``push``. Cold, ``pkg.a`` is
+    resolved before ``pkg.b`` and its answer for ``C`` (the instance's own
+    ``items``) was taken for ``D``; from the module cache it was not."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/a.py": OWNING_BASE,
+            "pkg/b.py": SKIPPING_SUBCLASS,
+            "tests/__init__.py": "",
+            "tests/test_push.py": "from pkg.b import D\n\n\ndef test_push():\n    D().push(1)\n",
+            "tests/test_other.py": "def test_other():\n    pass\n",
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench.py": "from pkg.a import C\n\n\ndef time_items():\n    C.items\n",
+        }
+    )
+    head = repo.commit({"pkg/b.py": SKIPPING_SUBCLASS.replace("append(x)", "append(x * 2)")})
+    targets = [
+        py_target("tests/test_push.py::test_push", "tests.test_push.test_push"),
+        py_target("tests/test_other.py::test_other", "tests.test_other.test_other"),
+        asv_target("bench.time_items", "benchmarks.bench.time_items"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert selected(plan) == {"tests/test_push.py::test_push", "bench.time_items"}
+    assert path_ids(reason(plan, "bench.time_items"))[-2:] == ["pkg.a.C", "pkg.b.D.push"]

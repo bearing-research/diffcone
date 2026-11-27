@@ -61,7 +61,9 @@ every variable of a module handed to one (and of its submodules: which of
 its attributes the callee writes is not recorded). A callee
 that does not resolve (``obj.fill(REG)``, ``registry.register(x)``) may be
 any in-scope function or method of that name, unless the receiver is a
-variable whose value is known: an instance of an in-scope class (only that
+variable itself (``LOG.info(m)``, ``cfg.LOG.info(m)``; not an item or
+attribute of one, ``H.registry.push(x)``, ``REG[k].run()``, which may be
+any object: audit round 9, Y17) whose value is known: an instance of an in-scope class (only that
 class's method), a dict, list or set display (only the container
 mutators, which pass 2 already records as writes; so is a local of the
 function bound once to a display or to ``dict()``/``list()``/``set()``:
@@ -697,6 +699,32 @@ def _variable_of(collector: _ReferenceCollector, expr: ast.expr, depth: int = 0)
     if symbol is None or symbol.kind != SymbolKind.VARIABLE or symbol.id == collector.source:
         return None
     return symbol.id
+
+
+def _names_variable(collector: _ReferenceCollector, expr: ast.expr, variable: str) -> bool:
+    """Whether ``expr`` names module-level ``variable`` itself (``LOG``, an
+    imported name for it, ``cfg.LOG``), not an item or attribute of it (a
+    chain through a variable resolves to the variable: ``LOG.registry``),
+    nor a local bound to it."""
+    parts = _flatten_chain(expr)
+    if parts is None or parts[0] in collector.scope.locals:
+        return False
+    indexer = collector.indexer
+    target = indexer.resolve_chain(parts, collector.scope)
+    if not isinstance(target, Resolved) or target.detail or target.symbol != variable:
+        return False
+    if len(parts) == 1:
+        return True
+    symbol = indexer.index.symbols.get(variable)
+    owner = indexer.resolve_chain(parts[:-1], collector.scope)
+    return (
+        symbol is not None
+        and parts[-1] == symbol.name
+        and isinstance(owner, Resolved)
+        and not owner.detail
+        and (found := indexer.index.symbols.get(owner.symbol)) is not None
+        and found.kind == SymbolKind.MODULE
+    )
 
 
 def _write(collector: _ReferenceCollector, expr: ast.expr, how: str = "*") -> None:
@@ -1381,6 +1409,11 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
     passes = _call_slots(node)
     handed: list[tuple[str, str]] = []  # (slot, what)
     whole: set[tuple[str, str]] = set()  # a parameter itself handed on (T23)
+    # A module variable itself the receiver (``LOG.info(m)``), not what it
+    # holds (``H.registry.push(x)``): its record is a whole pass too, which
+    # only the variable receiver rule of apply_writes reads (audit round 9,
+    # Y17).
+    itself_variable: set[str] = set()
     for slot, expr, part in passes:
         found = _handed_all(collector, expr)
         for what, itself in found:
@@ -1396,6 +1429,8 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
             handed.append((RECEIVER, what))
             if itself:
                 whole.add((RECEIVER, what))
+            elif what.startswith("var:") and _names_variable(collector, func.value, what[4:]):
+                itself_variable.add(what)
         if not _plainly_handed(collector, func.value, modules=False):
             # Not an instance of an in-scope class: the method's own writes
             # of ``self`` reach the state its class holds (T21, T22), and
@@ -1473,7 +1508,7 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
     for slot, what in handed:
         for callee in callees or [""]:
             out.add((collector.source, what, callee, name, slot, bound))
-            if (slot, what) in whole:
+            if (slot, what) in whole or (slot == RECEIVER and what in itself_variable):
                 indexer.out.whole_passes.add((collector.source, what, callee, name, slot, bound))
     if not isinstance(collector._parent(node), ast.Expr) and not (
         callees and callees[0].endswith(".__init__")
@@ -1920,6 +1955,18 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
             edges_from[edge.source].append(edge)
     for state, writer in sorted(out.value_writes):  # edges once every module is known
         edges_from[state].append(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY))
+    any_writes = _AnyWriters(out)
+
+    def state_edges(state: str) -> list[Edge]:
+        """The edges from ``state``: the index's, its value writes', and
+        those of the any-class writes kept as shared lists (``any_writes``),
+        which are value writes too (audit round 9, Y6)."""
+        found = edges_from.get(state, [])
+        writers = any_writes.of(state)
+        if not writers:
+            return found
+        return [*found, *(Edge(state, w, EdgeKind.REFERENCES, MUTATED_BY) for w in writers)]
+
     external_users = {x.symbol for x in indexer.index.external}
     # (function, name) -> the classes a function stored on a logging-derived
     # class under a callback's name is a method of (``SLog.handle = f``):
@@ -1966,7 +2013,7 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
         """``log = logging.getLogger(__name__)``, or a project factory whose
         every return is such a call (``get_logger(__name__)``): nothing of
         ours is called but third-party calls and such factories."""
-        found = edges_from.get(variable, [])
+        found = state_edges(variable)
         ours = [
             target
             for e in found
@@ -1980,7 +2027,7 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
     def value_classes(variable: str) -> list[str] | None:
         """The classes a variable's value is an instance of, when its
         initialiser says so (a constructor call and nothing else callable)."""
-        found = edges_from.get(variable, [])
+        found = state_edges(variable)
         if not any(e.detail == "constructor" for e in found):
             return None
         classes: list[str] = []
@@ -2043,7 +2090,12 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
             attr, _, cls = what[len("attr:") :].partition(":")
             if literal_table(cls, attr):
                 return []
-        if slot == RECEIVER and what.startswith("var:"):
+        if slot == RECEIVER and what.startswith("var:") and record in out.whole_passes:
+            # The variable itself is the receiver (``LOG.info(m)``: a whole
+            # pass), not something it holds (``H.registry.push(x)``,
+            # ``D[k].run()``), which may be any object, a project class's
+            # included: that takes any method of the name (audit round 9,
+            # Y17).
             variable = symbols.get(what[4:])
             if variable is not None:
                 scope = indexer.scopes.get(variable.module)
@@ -2770,6 +2822,36 @@ def any_written(out: _Output) -> set[str]:
         else:
             found.update(o for o in owners if o not in writers)
     return found
+
+
+class _AnyWriters:
+    """Who ``out.any_writes`` writes a state for, as it is when made (as
+    ``value_writes`` is read then): the writers of each shared list holding
+    it but the state itself, each list's content made a set once, on the
+    first question (pandas: thousands of lists, few distinct ones)."""
+
+    def __init__(self, out: _Output) -> None:
+        self._by_id: dict[int, tuple[list[str], set[str]]] = {}
+        for writer, lists in out.any_writes.items():
+            for owners in lists:
+                self._by_id.setdefault(id(owners), (owners, set()))[1].add(writer)
+        self._sets: list[tuple[frozenset[str], list[str]]] | None = None
+        self._found: dict[str, list[str]] = {}
+
+    def of(self, state: str) -> list[str]:
+        if not self._by_id:
+            return []
+        found = self._found.get(state)
+        if found is not None:
+            return found
+        if self._sets is None:
+            by_content: dict[tuple[str, ...], set[str]] = defaultdict(set)
+            for owners, writers in self._by_id.values():
+                by_content[tuple(owners)] |= writers
+            self._sets = [(frozenset(k), sorted(w)) for k, w in by_content.items()]
+        writers = {w for owners, ws in self._sets if state in owners for w in ws if w != state}
+        found = self._found[state] = sorted(writers)
+        return found
 
 
 class AnyClassOwners:

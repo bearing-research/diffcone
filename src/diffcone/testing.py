@@ -27,6 +27,7 @@ from diffcone.planner import (
     Plan,
     Reason,
     Rule,
+    _index_snapshot,
     plan,
 )
 from diffcone.report import to_dict
@@ -47,10 +48,11 @@ class FixtureRepo:
     """A throwaway git repository built from dicts of file contents.
 
     With ``check_cache`` (diffcone's own suite turns it on) every ``plan``
-    call is also planned through a cold cache, its whole-index entries and a
-    warm module cache in ``cache_dir`` (default: ``.fixture-cache`` beside
-    the repository) and the reports are asserted equal, which triples its
-    cost."""
+    call is also planned through a cold cache, its whole-index entries, a
+    warm module cache and one warm for the head only in ``cache_dir``
+    (default: ``.fixture-cache`` beside the repository), and with every
+    writer in a hub and with none, and the reports are asserted equal,
+    which costs about seven times as much."""
 
     def __init__(
         self, path: Path, *, check_cache: bool = False, cache_dir: Path | None = None
@@ -117,30 +119,43 @@ class FixtureRepo:
         (model.EdgeSet) and in the planning graph (planner._Graph.hubs), and
         the indexer keeps a function's writes of the classes of an unknown
         object as shared lists (writes.ANY_WRITES_SHARED), optimisations
-        only: with every writer in a hub, the writes made one by one, the
-        plan must be the same, explanations included."""
+        only: with every writer in a hub, and with none (a rule reading the
+        edges before or past the hubs: audit round 9, Y7), the writes made
+        one by one, the plan must be the same, explanations included."""
         expected = json.dumps(to_dict(result), sort_keys=True)
-        with (
-            mock.patch.object(planner_module, "_HUB_MIN", 1),
-            mock.patch.object(model_module, "EDGE_HUB_MIN", 1),
-            mock.patch.object(writes_module, "ANY_WRITES_SHARED", False),
-        ):
-            again = plan(self.path, base, head, manifest, source_roots=source_roots, **kwargs)
-        got = json.dumps(to_dict(again), sort_keys=True)
-        assert got == expected, "the plan with every writer in a hub differs"
+        for label, minimum in (("every writer in a hub", 1), ("no hub", sys.maxsize)):
+            with (
+                mock.patch.object(planner_module, "_HUB_MIN", minimum),
+                mock.patch.object(model_module, "EDGE_HUB_MIN", minimum),
+                mock.patch.object(writes_module, "ANY_WRITES_SHARED", False),
+            ):
+                again = plan(self.path, base, head, manifest, source_roots=source_roots, **kwargs)
+            got = json.dumps(to_dict(again), sort_keys=True)
+            assert got == expected, f"the plan with {label} differs"
 
     def _check_cache_invisible(self, result, base, head, manifest, source_roots, kwargs) -> None:
         """The caches are an optimisation only: a plan served cold (module
-        facts and resolution computed and stored), one served from the
-        whole-index entries the cold plan stored, and one served warm (every
-        module's facts and resolution loaded, whole-index entries removed so
-        the module cache is what answers) must equal the uncached plan."""
+        facts and resolution computed and stored: the base's, then the
+        head's, whose unchanged modules come from what the base stored, so
+        partially warm), one served from the whole-index entries the cold
+        plan stored, one served warm (every module's facts and resolution
+        loaded, whole-index entries removed so the module cache is what
+        answers), and one whose base is partially warm (the head indexed
+        first: the base's unchanged modules loaded, its changed ones
+        computed beside them; audit round 9, Y5) must equal the uncached
+        plan."""
         directory = self.cache_dir
-        shutil.rmtree(directory, ignore_errors=True)
         expected = json.dumps(to_dict(result), sort_keys=True)
-        for served in ("cold", "whole-index", "warm"):
-            if served == "warm":
+        roots = list(source_roots or manifest.source_roots or ["."])
+        for served in ("cold", "whole-index", "warm", "partially warm base"):
+            if served == "cold":
+                shutil.rmtree(directory, ignore_errors=True)
+            elif served == "warm":
                 shutil.rmtree(directory / "index", ignore_errors=True)
+            elif served == "partially warm base":
+                shutil.rmtree(directory, ignore_errors=True)
+                warm = IndexCache(directory)
+                _index_snapshot(self.path, head, roots, with_config=False, cache=warm)
             cache = IndexCache(directory)
             again = plan(
                 self.path, base, head, manifest, source_roots=source_roots, cache=cache, **kwargs
