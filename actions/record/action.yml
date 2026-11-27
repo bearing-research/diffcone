@@ -272,15 +272,17 @@ runs:
         fi
         misses=0
         if [ "$status" -eq 1 ]; then
-          # A miss must fail again on its own: a flaky test is not one. Only
-          # a test can be re-run; a file that failed to collect, or a failure
-          # no target names, stands as found.
+          # A miss must fail again: a flaky test is not one. Only a test can
+          # be re-run; a file that failed to collect, or a failure no target
+          # names, stands as found. Listed in the full run's order.
           if ! "$py" -c "
         import json, sys
         v = json.load(open(sys.argv[1]))
-        kinds = {f['test']: f['kind'] for f in v['failures']}
-        for test in v['misses']:
-            print(kinds.get(test, 'unknown'), test)" "$RESULTS/verdict.json" > "$RESULTS/misses.txt"; then
+        failures = {f['test']: f for f in v['failures']}
+        def position(test):
+            return failures.get(test, {}).get('position', 0), test
+        for test in sorted(v['misses'], key=position):
+            print(failures.get(test, {}).get('kind', 'unknown'), test)" "$RESULTS/verdict.json" > "$RESULTS/misses.txt"; then
             echo "::error::diffcone check found a miss but its verdict cannot be read"
             check_error=true
             record 1
@@ -302,8 +304,18 @@ runs:
           fi
           confirmed=$other
           if [ ${#ids[@]} -gt 0 ]; then
+            # The whole module of each missed test, in the order the full
+            # run ran them: a test that fails only after another one of its
+            # module (state an earlier test leaked, the likeliest real miss)
+            # passes when run alone, and would count as flaky.
+            modules=()
+            for id in "${ids[@]}"; do
+              module=${id%%::*} seen=false
+              for m in "${modules[@]}"; do [ "$m" = "$module" ] && seen=true; done
+              [ "$seen" = true ] || modules+=("$module")
+            done
             # The run's own options (markers, -W, plugins), but not its
-            # paths: the re-run names the tests. A path after an option that
+            # paths: the re-run names the modules. A path after an option that
             # takes no value is a path (-ra, -v); after one that may take a
             # value it is kept, which only costs time.
             eval "args=($PYTEST_ARGS)"
@@ -323,7 +335,7 @@ runs:
             # an -x or --maxfail there would stop the re-run at its first
             # failure, before the other tests it names.
             eval "cmd=($COMMAND)"
-            "${cmd[@]}" "${rerun[@]}" --maxfail=0 -p no:cacheprovider "--junitxml=$RESULTS/rerun.xml" "${ids[@]}" \
+            "${cmd[@]}" "${rerun[@]}" --maxfail=0 -p no:cacheprovider "--junitxml=$RESULTS/rerun.xml" "${modules[@]}" \
               > "$RESULTS/rerun.log" 2>&1 || rc=$?
             # Only the re-run tests count: anything else the re-run ran is
             # not a miss of this check. A re-run that cannot be read leaves

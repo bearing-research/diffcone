@@ -524,7 +524,9 @@ def test_r3_r7_run_exit_codes():
 
     assert _run_exit_code(0, missing=True) == 3  # a selected test never ran
     assert _run_exit_code(5, missing=True) == 3
-    assert _run_exit_code(1, missing=True) == 1  # the runner's failure wins
+    # 3 wins (Y22): a failing test beside them does not hide that the run was short.
+    assert _run_exit_code(1, missing=True) == 3
+    assert _run_exit_code(2, missing=True) == 3
     assert _run_exit_code(5, missing=False) == 0  # every selected test skipped at import
     assert _run_exit_code(1, missing=False) == 1
 

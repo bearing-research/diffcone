@@ -123,8 +123,9 @@ reads = ["cpp/**", "format/**", "testing", ".github/workflows/python.yml", "ci/s
 
 A changed build file or submodule outside the source roots that no pattern
 covers is then set aside: it doesn't select anything by itself. The text
-report lists every path set aside, and the JSON report gives them under
-`build_reads.set_aside`. A plan that uses a recording treats a set-aside
+report and `diffcone run` list every path set aside, the JSON report
+gives them under `build_reads.set_aside`, and
+[`diffcone report`](../ci.md#report-on-recent-runs) lists them per job. A plan that uses a recording treats a set-aside
 file like any other file: it selects the tests that read it.
 
 Some files are never set aside: a `conftest.py`, your runner's

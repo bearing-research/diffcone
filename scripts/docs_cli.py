@@ -48,12 +48,12 @@ could skip tests. `3` wins when both apply. A manifest written by
 `run` exits with the runner's own code (0 when nothing ran because
 nothing was selected, or with `--dry-run`; pytest's `5`, no test ran, counts as `0`), and with `3`
 when a selected test was not collected or the selection plugin never ran
-(a wrapper in `--command` that does not pass its arguments on to pytest).
-It refuses with `2` when the
-working tree differs from the snapshot the plan analysed (unless
-`--allow-mismatched-worktree`) or `--repo` is not the top of a git
-repository, and with `3` when discovery may be incomplete (unless
-`--allow-incomplete-discovery`).
+(a wrapper in `--command` that does not pass its arguments on to pytest),
+even when tests failed too. It refuses with `2` when the
+working tree differs from the snapshot the plan analysed, whatever the
+plan selects (unless `--allow-mismatched-worktree`), or `--repo` is not
+the top of a git repository, and with `3` when discovery may be
+incomplete (unless `--allow-incomplete-discovery`).
 
 `validate` and `corpus` exit `0` when every outcome change was selected,
 `1` when some were missed, `2` on errors. A test that is not a target is

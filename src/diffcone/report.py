@@ -277,12 +277,16 @@ _PIECES = 65536
 
 
 @without_cyclic_gc
-def write_json(plan: Plan, out: TextIO, indent: int | None = 2) -> None:
+def write_json(
+    plan: Plan, out: TextIO, indent: int | None = 2, extra: dict[str, Any] | None = None
+) -> None:
     """``to_json(plan)`` written to ``out`` as it is encoded: ``json.dumps``
     keeps every piece in a list before joining them (pandas: millions of
-    small strings, 1.7 GB at the end of a plan)."""
+    small strings, 1.7 GB at the end of a plan). ``extra``'s keys follow
+    the plan's (``run -o`` adds what the run did)."""
+    data = to_dict(plan) | (extra or {})
     pieces: list[str] = []
-    for piece in json.JSONEncoder(indent=indent, sort_keys=False).iterencode(to_dict(plan)):
+    for piece in json.JSONEncoder(indent=indent, sort_keys=False).iterencode(data):
         pieces.append(piece)
         if len(pieces) >= _PIECES:
             out.write("".join(pieces))

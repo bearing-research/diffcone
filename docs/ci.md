@@ -219,10 +219,14 @@ On a push, `record` with `check: true`:
 1. restores the newest recording and plans the commit's change from it;
 2. runs the full suite under the recorder;
 3. compares the plan with the full run. A new failure the plan didn't
-   select is run again, with the same pytest options. If it fails again,
-   it is a miss, and the job fails. If it passes the second time, it is
-   reported as flaky. Only a test can be run again: a file that failed to
-   collect, or a failure that matches no target, is a miss straight away.
+   select is run again: its whole test file, with the same pytest options,
+   the files in the order the full run ran them, so a test that fails only
+   after another test of its file fails again. If it fails again, it is a
+   miss, and the job fails. If it passes the second time, it is reported
+   as flaky. A test that fails only after a test in another file passes
+   in the re-run, so it is reported as flaky too. Only a test can be run
+   again: a file that failed to collect, or a failure that matches no
+   target, is a miss straight away.
    Failures the recorded run already had are not misses. If
    `diffcone check` itself fails (an input it can't read), or the plan of
    the commit's change fails even without the recording, the job fails
@@ -254,8 +258,10 @@ Once every job runs through diffcone, a scheduled `report` job reads what
 the jobs uploaded and sums it up: for pull requests, the share of tests
 each job selected (leaving out the tests
 [`[[always_run]]`](reference/declarations.md#tests-to-run-on-every-change)
-names) and how often it planned without a recording (and what
-differed); for recordings, whether each pushed commit was checked, its new
+names), how often it planned without a recording (and what
+differed) and the changed paths
+[`[build] reads`](reference/declarations.md#build-files-your-tests-dont-use)
+set aside; for recordings, whether each pushed commit was checked, its new
 failures, flaky tests and misses. It adds the report as a comment on an
 issue labelled `diffcone-report`, and opens one issue, labelled
 `diffcone-miss`, for each test diffcone missed.

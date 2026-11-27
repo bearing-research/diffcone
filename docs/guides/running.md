@@ -69,7 +69,9 @@ is close to, but not the same as, what `run` does:
   `run` refuses and names the files. That includes any file under your
   source roots, a git-ignored `.py` beside tracked code, any
   `conftest.py`, pytest or ASV configuration, `diffcone.toml`, dependency
-  and lock files, and submodules. Plan with `--head WORKTREE`, or pass
+  and lock files, and submodules. It refuses even when nothing was
+  selected: "nothing to run" is a verdict on the planned code, not on
+  your edits. Plan with `--head WORKTREE`, or pass
   `--allow-mismatched-worktree`. Two kinds of file don't count: the
   results diffcone's CI actions write to `diffcone-results/` (and the file
   `run -o` names), and a git-ignored module that neither commit holds and

@@ -15,12 +15,14 @@ only the selected targets would skip tests. 3 wins when both apply.
 
 ``run`` refuses to execute an incomplete plan (exit 3) unless
 --allow-incomplete-discovery is given, and refuses (exit 2) when the working
-tree it would run differs, under the source roots, from the snapshot the plan
-analysed, unless --allow-mismatched-worktree is given; otherwise it exits with
-the runner's exit code (0 when nothing ran because nothing was selected, or
-with --dry-run; pytest's
+tree differs, in any file the plan would select on, from the snapshot the
+plan analysed, unless --allow-mismatched-worktree is given, whatever the plan
+selects (an empty selection is a verdict on that tree too); otherwise it
+exits with the runner's exit code (0 when nothing ran because nothing was
+selected, or with --dry-run; pytest's
 5 counts as 0), or 3 when a selected target was not collected or no process
-loaded the selection plugin (a wrapper that drops its arguments). With
+loaded the selection plugin (a wrapper that drops its arguments), even when
+tests failed too (3 wins, as for a plan). With
 --allow-incomplete-discovery pytest runs even when nothing was selected: the
 tests it collects that are no target are kept. ``validate`` exits
 0 when every outcome change was selected (a test that is not a target is
@@ -90,7 +92,7 @@ from diffcone.execution import (
 )
 from diffcone.manifest import ManifestError, load_manifest, manifest_to_dict
 from diffcone.planner import _index_snapshot, plan
-from diffcone.report import snapshot_to_dict, to_json, to_text, write_json
+from diffcone.report import snapshot_to_dict, to_text, write_json
 from diffcone.snapshot import GitError, read_snapshot, resolve_commit
 
 
@@ -828,11 +830,12 @@ def _outputs_in(repo: str, output: str | None) -> list[str]:
 def _run_exit_code(returncode: int, missing: bool) -> int:
     """``run``'s exit code from the runner's. Selected targets that did not run
     (or may not have: the selection plugin never ran) make it 3 (the run may
-    have skipped tests) unless the runner failed on its own; pytest's 5 (no
-    tests ran) is 0 when every selected test was collected and skipped or
-    deselected by the project's own options."""
+    have skipped tests) whatever the runner's own code: 3 wins, as it does
+    for a plan, so a failing test beside them cannot hide that the run was
+    short. pytest's 5 (no tests ran) is 0 when every selected test was
+    collected and skipped or deselected by the project's own options."""
     if missing:
-        return returncode if returncode not in (0, 5) else 3
+        return 3
     return 0 if returncode == 5 else returncode
 
 
@@ -1024,18 +1027,14 @@ def _main(argv: list[str] | None) -> int:
             ran_plan = result
             # Why the recording was not used, for ``-o``.
             unused: dict | None = None
-            # With discovery incomplete (and allowed), pytest runs even when
-            # nothing is selected: the tests it collects that are no target
-            # are kept.
-            unknown_run = runs_unknown(result, args.runner) and args.allow_incomplete_discovery
-            will_run = unknown_run or any(
-                d.selected and d.target.runner == args.runner for d in result.decisions
-            )
-            # Only worth refusing when something would actually execute.
-            mismatch = (
-                worktree_mismatch(Path(args.repo), result, _outputs_in(args.repo, args.output))
-                if will_run
-                else None
+            # Whatever the selection: an empty one is a verdict on the tree
+            # too ("nothing to run"), and on a tree the plan never analysed it
+            # would pass for one. With --evidence the plan that runs may be
+            # the static one (the environment differs from the recording's),
+            # whose selection is not known yet; both analyse the same
+            # snapshots, so the check made here holds for either.
+            mismatch = worktree_mismatch(
+                Path(args.repo), result, _outputs_in(args.repo, args.output)
             )
             if mismatch and not args.allow_mismatched_worktree:
                 print(
@@ -1145,15 +1144,28 @@ def _main(argv: list[str] | None) -> int:
                 )
             if args.output and not args.dry_run:
                 # The plan that ran (the static one when the evidence did not
-                # apply), as ``plan -o`` writes it.
-                text = to_json(ran_plan)
-                if unused is not None:
-                    data = json.loads(text)
-                    data["evidence_not_used"] = unused
-                    text = json.dumps(data, indent=2) + "\n"
-                code = _write(text, args.output)
+                # apply), as ``plan -o`` writes it, and what the run left out.
+                extra: dict = {} if unused is None else {"evidence_not_used": unused}
+                if outcome.returncode is not None:
+                    extra["run"] = {
+                        "not_collected": list(outcome.missing),
+                        "selection_plugin_missing": outcome.plugin_missing,
+                    }
+                code = _write_with(lambda out: write_json(ran_plan, out, extra=extra), args.output)
                 if code:
                     return code
+            if ran_plan.build_set_aside:
+                # As ``plan``'s text report says it: a plan that trusts the
+                # table selected nothing for these.
+                shown = ", ".join(ran_plan.build_set_aside[:5])
+                more = len(ran_plan.build_set_aside) - 5
+                print(
+                    f"diffcone: [build] reads set aside {len(ran_plan.build_set_aside)} changed "
+                    f"path(s) outside the source roots that no pattern names: {shown}"
+                    + (f" and {more} more" if more > 0 else "")
+                    + "; if a test reads one, the table is wrong and this run may miss tests",
+                    file=sys.stderr,
+                )
             if outcome.unknown:
                 print(
                     f"diffcone: pytest collected {len(outcome.unknown)} test(s) the plan does not "

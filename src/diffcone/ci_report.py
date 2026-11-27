@@ -13,7 +13,8 @@ uploaded, downloaded into one directory per workflow run::
 
 and reports, per artifact name (one job, or one cell of a job's matrix):
 pull-request runs (selected share, plans made from the code instead of a
-recording and why, refusals) and checked pushes (checked or not and why,
+recording and why, refusals, selected tests that did not run, the paths
+``[build] reads`` set aside) and checked pushes (checked or not and why,
 new failures, flaky re-runs, confirmed misses), then each confirmed miss.
 It reads files only and runs nothing, like ``check``.
 
@@ -84,6 +85,9 @@ class CellReport:
     refused: int = 0
     plan_failed: int = 0
     not_collected: int = 0  # runs where pytest did not collect selected tests
+    # Paths ``[build] reads`` set aside (changed, outside the roots, named by
+    # no pattern), with the runs whose plan set each aside.
+    set_aside: Counter[str] = field(default_factory=Counter)
     # Runs whose ``diffcone run`` failed after a good plan (exit 2 or more,
     # other than 3: it refused, or pytest was interrupted or could not start).
     run_failed: int = 0
@@ -165,6 +169,14 @@ def _plan_read(plan: dict[str, Any] | None) -> dict[str, Any] | None:
         out["analysis"] = analysis
     if "evidence_not_used" in plan:
         out["evidence_not_used"] = plan["evidence_not_used"]
+    reads = plan.get("build_reads")
+    if isinstance(reads, dict):
+        out["build_reads"] = {"set_aside": reads.get("set_aside")}
+    elif "build_reads" in plan:
+        out["build_reads"] = reads
+    if "run" in plan:
+        # What ``run -o`` adds: the selected targets pytest did not collect.
+        out["run"] = plan["run"]
     unselected = plan.get("unselected_targets")
     if isinstance(unselected, list):
         out["unselected_targets"] = [
@@ -340,6 +352,30 @@ def _unselected_reason(plan: dict[str, Any] | None, test: str) -> str | None:
     return None
 
 
+def _not_collected(plan: dict[str, Any] | None) -> bool:
+    """Whether the plan ``run -o`` wrote says selected targets did not run:
+    pytest did not collect some, or no process loaded the selection plugin."""
+    run = (plan or {}).get("run")
+    if run is None:
+        return False
+    if not isinstance(run, dict):
+        raise TypeError(f"not a run record: {run!r}")
+    missing = run.get("not_collected") or []
+    if not isinstance(missing, list):
+        raise TypeError(f"not a list of tests: {missing!r}")
+    return bool(missing) or bool(run.get("selection_plugin_missing"))
+
+
+def _set_aside(plan: dict[str, Any] | None) -> list[str]:
+    reads = (plan or {}).get("build_reads")
+    if reads is None:
+        return []
+    paths = reads.get("set_aside") or []
+    if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+        raise TypeError(f"not a list of paths: {paths!r}")
+    return paths
+
+
 def _count(value: Any) -> int:
     """A count from a context: a non-negative integer, or ``ValueError``."""
     if value is None or value == "":
@@ -389,6 +425,7 @@ def _add(art: Artifact, context: dict[str, Any], cell: CellReport, totals: _Tota
                 )
             )
             cell.from_code[str(note)] += 1
+        cell.set_aside.update(set(_set_aside(art.plan)))
         plan_exit = context.get("plan_exit")
         refused = (
             plan_exit == 3
@@ -402,9 +439,11 @@ def _add(art: Artifact, context: dict[str, Any], cell: CellReport, totals: _Tota
         elif refused:
             cell.refused += 1
             totals.refused += 1
-        elif context.get("run_exit") == 3:
+        elif context.get("run_exit") == 3 or _not_collected(art.plan):
             # ``run`` exits 3 when pytest did not collect selected targets,
             # or no process loaded the selection plugin: they did not run.
+            # Its ``-o`` plan says so too, whatever the exit (an older
+            # ``run`` exited with pytest's failure when a test failed too).
             cell.not_collected += 1
             totals.not_collected += 1
         elif context.get("run_exit") not in (0, 1):
@@ -527,6 +566,7 @@ def to_dict(report: Report) -> dict[str, Any]:
                     "plan_failed": c.plan_failed,
                     "not_collected": c.not_collected,
                     "run_failed": c.run_failed,
+                    "set_aside": dict(sorted(c.set_aside.items())),
                 },
                 "pushes": {
                     "runs": c.pushes,
@@ -683,6 +723,21 @@ def to_markdown(report: Report) -> str:
                 f"{from_code} | {c.refused} | {c.plan_failed} | {c.run_failed} | "
                 f"{c.not_collected} |"
             )
+        lines.append("")
+    aside = [c for c in report.cells if c.set_aside]
+    if aside:
+        lines += [
+            "**Set aside by `[build] reads`**: changed paths outside the source roots that "
+            "no pattern of the table names, so the plans selected nothing for them. If a "
+            "test reads one, the table is wrong and those runs may have missed tests.",
+            "",
+        ]
+        for c in aside:
+            shown = ", ".join(
+                f"{code_span(path)} ({n})" for path, n in sorted(c.set_aside.items())[:10]
+            )
+            more = len(c.set_aside) - 10
+            lines.append(f"- {c.name}: {shown}" + (f" and {more} more" if more > 0 else ""))
         lines.append("")
     pushes = [c for c in report.cells if c.pushes]
     if pushes:

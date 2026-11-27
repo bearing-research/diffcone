@@ -3056,9 +3056,12 @@ one with a function or a call could (a test importing it would depend on
 what it calls through an edge no snapshot shows), so it is still refused,
 and a `WORKTREE` snapshot reads ignored files. The message names the files. Differences
 elsewhere (a manifest, a README outside the roots, an extra commit that
-touches neither) do not block it, and neither does a plan that selected
-nothing, since nothing would run; `--allow-mismatched-worktree` says to go
-ahead.
+touches neither) do not block it. A plan that selected nothing is refused
+too (round 9, Y21): "nothing to run" is a verdict on the analysed code, and
+on another tree it would pass for one. With `--evidence` the check is made
+before anything runs, so it also covers the static plan that runs when the
+environment differs from the recording's (Y20): both plans analyse the same
+snapshots. `--allow-mismatched-worktree` says to go ahead.
 
 `diffcone/execution.py` is the only module that runs project code, and only
 from the `run`, `validate`, `corpus` and `collect` commands: the first
@@ -3083,7 +3086,11 @@ three after a plan exists, `collect` to record execution evidence.
   collects writes its report of missing tests, empty or not; when pytest ran
   and none did (a wrapper in `--command` that drops its arguments, a tox or
   make target without `{posargs}`), what ran is not the selection, and `run`
-  exits 3 as for an uncollected target (audit U9). The cost is one full collection. `--dry-run` prints the equivalent command
+  exits 3 as for an uncollected target (audit U9), whatever pytest's own
+  code: a failing test beside them does not hide that the run was short
+  (Y22). `run -o` records both in the plan it writes (`run.not_collected`,
+  `run.selection_plugin_missing`), which `diffcone report` counts whatever
+  the exit. The cost is one full collection. `--dry-run` prints the equivalent command
   with node ids appended. ASV gets a `--bench` regex. That regex is
   `^(name|name|...)($|\()`, not `...$`: ASV matches it against a benchmark's
   name, and against `name(param0, param1, ...)` for a parameterised one, so

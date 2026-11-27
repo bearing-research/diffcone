@@ -191,6 +191,9 @@ class Failure:
     kind: str  # test, collection (a file failed to collect) or unknown (no target)
     selected: bool
     already: bool  # the baseline run failed it too
+    # Where its first broken case stands in the full run (0 for the first
+    # case): the record action re-runs misses' modules in the run's order.
+    position: int = 0
 
 
 # The ``--run`` name of diffcone's own selective run: its misses fail the check.
@@ -274,13 +277,13 @@ class CheckReport:
         )
 
 
-def _broken(cases: list[Case], targets: _Targets) -> dict[str, tuple[str, str, set[str]]]:
-    """Test -> (outcome, kind, broken case keys) for every broken case, by
-    target where one matches. The keys keep a parametrized case's
-    parameters: a baseline failure of ``test_x[a]`` says nothing about
-    ``test_x[b]``."""
-    out: dict[str, tuple[str, str, set[str]]] = {}
-    for case in cases:
+def _broken(cases: list[Case], targets: _Targets) -> dict[str, tuple[str, str, set[str], int]]:
+    """Test -> (outcome, kind, broken case keys, position of the first) for
+    every broken case, by target where one matches. The keys keep a
+    parametrized case's parameters: a baseline failure of ``test_x[a]``
+    says nothing about ``test_x[b]``."""
+    out: dict[str, tuple[str, str, set[str], int]] = {}
+    for position, case in enumerate(cases):
         if case.outcome not in BROKEN:
             continue
         matched = targets.match(case)
@@ -293,7 +296,7 @@ def _broken(cases: list[Case], targets: _Targets) -> dict[str, tuple[str, str, s
         else:
             tests, kind = [case.key], "unknown"
         for test in tests:
-            out.setdefault(test, (case.outcome, kind, set()))[2].add(case.key)
+            out.setdefault(test, (case.outcome, kind, set(), position))[2].add(case.key)
     return out
 
 
@@ -328,7 +331,9 @@ def check(
     before = _broken(baseline, targets) if baseline is not None else {}
     # Already failing: every case that broke also broke at the baseline.
     already = {
-        test for test, (_, _, keys) in broken.items() if test in before and keys <= before[test][2]
+        test
+        for test, (_, _, keys, _) in broken.items()
+        if test in before and keys <= before[test][2]
     }
 
     def selected(test: str, kind: str) -> bool:
@@ -337,8 +342,8 @@ def check(
         return test in targets.selected
 
     failures = [
-        Failure(test, outcome, kind, selected(test, kind), test in already)
-        for test, (outcome, kind, _) in sorted(broken.items())
+        Failure(test, outcome, kind, selected(test, kind), test in already, position)
+        for test, (outcome, kind, _, position) in sorted(broken.items())
     ]
     new = {f.test for f in failures if not f.already}
     run_reports = []
@@ -434,6 +439,7 @@ def to_dict(report: CheckReport) -> dict:
                 "kind": f.kind,
                 "selected": f.selected,
                 "already_failing": f.already,
+                "position": f.position,
             }
             for f in report.failures
         ],

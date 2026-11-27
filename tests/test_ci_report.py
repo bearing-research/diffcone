@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -881,6 +882,8 @@ def _check_step(
     (results / "previous.xml").write_text(_junit([], names))
     (work / "full.xml").write_text(_junit(list(failing), [n for n in names if n not in failing]))
     (results / "rerun.junit").write_text(rerun_junit or "")
+    # The tests a re-run of the module finds (STOPPING_PYTEST runs them).
+    (results / "module-tests").write_text("\n".join(names))
     fake = bin_dir / "fakepytest"
     fake.write_text(
         fake_pytest.replace("RESULTS", str(results))
@@ -972,18 +975,18 @@ def test_ci4_a_miss_exit_without_a_verdict_is_a_check_error(tmp_path):
 @posix_only
 def test_ci7_only_the_rerun_tests_count_and_a_path_after_a_flag_is_dropped(tmp_path):
     # ``-ra tests``: tests is a path, not -r's value, so the re-run names only
-    # the missed test. And a failure of anything else the re-run ran is not
-    # this check's miss (it made the flaky count negative).
+    # the missed test's module. And a failure of anything else the re-run
+    # ran is not this check's miss (it made the flaky count negative).
     got, _, args = _check_step(
         tmp_path, _junit(["test_other"], ["test_x"]), pytest_args="-ra tests"
     )
-    assert "tests" not in args and "tests/test_a.py::test_x" in args
+    assert "tests" not in args and "tests/test_a.py" in args
     assert (got["misses"], got["flaky"]) == ("0", "1")
 
 
-# A fake pytest that runs the tests it is named in order, every one failing,
-# and stops as -x / --maxfail (the last one given) says: an unreached test
-# has no case in the JUnit.
+# A fake pytest that runs the tests of the modules it is named in order
+# (RESULTS/module-tests), every one failing, and stops as -x / --maxfail (the
+# last one given) says: an unreached test has no case in the JUnit.
 STOPPING_PYTEST = f"""#!{sys.executable}
 import sys
 args = sys.argv[1:]
@@ -996,8 +999,8 @@ for a in args:
         maxfail = int(a.split("=", 1)[1])
     elif a.startswith("--junitxml="):
         out = a.split("=", 1)[1]
-    elif "::" in a:
-        ids.append(a.split("::", 1)[1])
+    elif a.endswith(".py"):
+        ids += open("RESULTS/module-tests").read().split()
 if maxfail:
     ids = ids[:maxfail]
 case = '<testcase classname="tests.test_a" name="{{}}"><failure/></testcase>'
@@ -1078,7 +1081,127 @@ def test_the_record_check_reruns_a_quoted_command_as_written(tmp_path):
     assert done.returncode == 0, done.stdout + done.stderr
     args = (results / "rerun-args").read_text().splitlines()
     assert args[:2] == ["-X", "a b"]
-    assert "tests/test_a.py::test_x" in args
+    assert "tests/test_a.py" in args
+
+
+def _real_check(tmp_path: Path, files: dict[str, str], unselected: list[str], pytest_args=""):
+    """Run the record action's check step on a real project: the full run is
+    real pytest (``pytest_args`` naming the order), the baseline passed every
+    test, and the plan selected every test but ``unselected``. Returns the
+    step's outputs and the re-run's arguments."""
+    work, results, bin_dir = tmp_path / "repo", tmp_path / "results", tmp_path / "bin"
+    for d in (work / ".diffcone", results, bin_dir):
+        d.mkdir(parents=True)
+    for name, text in files.items():
+        (work / name).parent.mkdir(parents=True, exist_ok=True)
+        (work / name).write_text(text)
+    subprocess.run(["git", "init", "-q"], cwd=work, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "--allow-empty",
+         "-m", "x"],
+        cwd=work, check=True,
+    )  # fmt: skip
+    py = sys.executable
+    full = [py, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--junitxml=full.xml"]
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    subprocess.run([*full, *shlex.split(pytest_args)], cwd=work, capture_output=True, env=env)
+    ids = [
+        f"{name}::{line[4:].split('(')[0]}"
+        for name, text in files.items()
+        if name.rpartition("/")[2].startswith("test_")
+        for line in text.splitlines()
+        if line.startswith("def test_")
+    ]
+    cases = "".join(
+        f'<testcase classname="{i.split("::")[0][:-3].replace("/", ".")}" '
+        f'name="{i.split("::")[1]}"/>'
+        for i in ids
+    )
+    (results / "previous.xml").write_text(
+        f"<testsuites><testsuite>{cases}</testsuite></testsuites>"
+    )
+    plan = {
+        "status": "complete",
+        "selected_targets": [
+            {"runner": "pytest", "runner_id": i} for i in ids if i not in unselected
+        ],
+        "unselected_targets": [{"runner": "pytest", "runner_id": i} for i in unselected],
+    }
+    (results / "plan.json").write_text(json.dumps(plan))
+    (bin_dir / "diffcone").symlink_to(Path(py).parent / "diffcone")
+    # Writes the re-run's arguments down, then runs the real pytest.
+    (bin_dir / "pytestargs").write_text(
+        f'#!/bin/bash\nprintf "%s\\n" "$@" > {results}/rerun-args\nexec {py} -m pytest "$@"\n'
+    )
+    (bin_dir / "pytestargs").chmod(0o755)
+    outputs = tmp_path / "outputs"
+    done = _bash(
+        _step("record", "Check the plan against this full run"),
+        work,
+        {
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "RESULTS": str(results),
+            "JUNIT": "full.xml",
+            "COMMAND": "pytestargs",
+            "PYTEST_ARGS": pytest_args,
+            "GITHUB_OUTPUT": str(outputs),
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    got = dict(line.split("=", 1) for line in outputs.read_text().splitlines())
+    return got, (results / "rerun-args").read_text().splitlines()
+
+
+STATE = "FLAG = False\n\n\ndef enable():\n    global FLAG\n    FLAG = True\n"
+
+
+@posix_only
+def test_y19_a_miss_is_run_again_with_its_whole_module(tmp_path):
+    """A test that fails only after another test of its module changed
+    shared state passed when re-run alone, so the check counted the miss as
+    flaky (misses=0): the whole module is re-run, and it fails again."""
+    got, args = _real_check(
+        tmp_path,
+        {
+            "lib/__init__.py": "",
+            "lib/state.py": STATE,
+            "tests/__init__.py": "",
+            "tests/test_s.py": (
+                "from lib import state\n\n\ndef test_a():\n    state.enable()\n\n\n"
+                "def test_b():\n    assert not state.FLAG\n"
+            ),
+        },
+        ["tests/test_s.py::test_b"],
+    )
+    assert (got["misses"], got["flaky"], got["check-error"]) == ("1", "0", "false")
+    assert "tests/test_s.py" in args and "tests/test_s.py::test_b" not in args
+
+
+@posix_only
+def test_y19_the_modules_are_run_again_in_the_full_runs_order(tmp_path):
+    """Two missed modules, the later by name run first by the full run: the
+    re-run names them as the full run ran them, so what the first leaves
+    behind reaches the second again."""
+    got, args = _real_check(
+        tmp_path,
+        {
+            "lib/__init__.py": "",
+            "lib/state.py": STATE,
+            "tests/__init__.py": "",
+            "tests/test_z.py": (
+                "from lib import state\n\n\ndef test_z():\n    state.enable()\n    assert False\n"
+            ),
+            "tests/test_a.py": (
+                "from lib import state\n\n\ndef test_a():\n    assert not state.FLAG\n"
+            ),
+        },
+        ["tests/test_z.py::test_z", "tests/test_a.py::test_a"],
+        pytest_args="tests/test_z.py tests/test_a.py",
+    )
+    assert args.index("tests/test_z.py") < args.index("tests/test_a.py")
+    assert (got["misses"], got["flaky"]) == ("2", "0")
 
 
 # --------------------------------------------------------------------------- recording keys
@@ -1262,6 +1385,48 @@ def test_ci9_selected_tests_pytest_did_not_collect_are_a_problem(tmp_path):
     report = ci_report.build(ci_report.load(tmp_path))
     assert report.not_collected == 1 and not report.ok
     assert "did not run selected tests" in ci_report.to_markdown(report)
+
+
+@pytest.mark.parametrize("run_exit", [1, 0])
+def test_y22_selected_tests_not_collected_count_whatever_the_exit(tmp_path, run_exit):
+    """The plan ``run -o`` wrote names selected targets pytest did not
+    collect; the run exited 1 (a test failed too, as an older ``run``
+    reported it): the report counted the uncollected tests only on exit 3."""
+    from diffcone import ci_report
+
+    context = {"action": "run", "event": "pull_request", "plan_exit": 0, "run_exit": run_exit}
+    ran = {**_plan(2, 3), "run": {"not_collected": ["tests/t.py::b"]}}
+    _artifact(tmp_path, 1, "pull_request", {"context.json": context, "ran.json": ran})
+    report = ci_report.build(ci_report.load(tmp_path))
+    assert report.not_collected == 1 and not report.ok
+    # The cut of a downloaded artifact keeps it.
+    archive = _zip(
+        tmp_path / "a.zip", {"context.json": json.dumps(context), "ran.json": json.dumps(ran)}
+    )
+    cut = tmp_path / "cut" / "1" / "diffcone-unit"
+    ci_report.extract(archive, cut)
+    assert ci_report.build(ci_report.load(tmp_path / "cut")).not_collected == 1
+    # A run that collected every selected test is no problem.
+    ran["run"] = {"not_collected": [], "selection_plugin_missing": False}
+    (tmp_path / "1" / "diffcone-unit" / "ran.json").write_text(json.dumps(ran))
+    report = ci_report.build(ci_report.load(tmp_path))
+    assert report.not_collected == 0 and report.ok
+
+
+def test_y23_the_report_names_what_build_reads_set_aside(tmp_path):
+    """Paths ``[build] reads`` set aside in the plans that ran: the report
+    never showed them."""
+    from diffcone import ci_report
+
+    context = {"action": "run", "event": "pull_request", "plan_exit": 0, "run_exit": 0}
+    ran = {**_plan(0, 3), "build_reads": {"patterns": ["cpp/**"], "set_aside": [".env"]}}
+    _artifact(tmp_path, 1, "pull_request", {"context.json": context, "ran.json": ran})
+    _artifact(tmp_path, 2, "pull_request", {"context.json": context, "ran.json": ran})
+    report = ci_report.build(ci_report.load(tmp_path))
+    assert report.cells[0].set_aside == {".env": 2}
+    assert ci_report.to_dict(report)["cells"][0]["pull_requests"]["set_aside"] == {".env": 2}
+    text = ci_report.to_markdown(report)
+    assert "Set aside by `[build] reads`" in text and "- diffcone-unit: `.env` (2)" in text
 
 
 def test_a_not_checked_reason_cannot_break_the_report_table(tmp_path):

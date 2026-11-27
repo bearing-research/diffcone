@@ -152,7 +152,9 @@ def test_run_executes_only_selected_targets(repo, capsys):
     )
     assert code == 1
 
-    # Nothing selected: nothing runs, exit 0.
+    # Nothing selected: nothing runs, exit 0. (The checkout must be what was
+    # planned, even when nothing is selected: Y21.)
+    repo.git("checkout", "-q", base)
     code = main(
         [
             "run",
@@ -170,6 +172,7 @@ def test_run_executes_only_selected_targets(repo, capsys):
     )
     assert code == 0
     assert "nothing selected" in capsys.readouterr().err
+    repo.git("checkout", "-q", head)
 
     code = main(
         [
@@ -1940,6 +1943,135 @@ def test_q18_a_non_ascii_name_is_filtered_and_a_rename_is_two_changes(repo):
     # A rename: the new name and the original, not "old -> new".
     repo.git("mv", "pkg/old.py", "pkg/new.py")
     assert sorted(_dirty(repo.path)) == ["pkg/new.py", "pkg/old.py"]
+
+
+def test_y21_run_refuses_a_changed_tree_when_nothing_is_selected(repo, capsys):
+    """A plan of a commit that selects nothing, run on a tree with an
+    uncommitted edit that breaks a test: ``run`` skipped the check (nothing
+    would execute) and exited 0, a pass for a tree the plan never saw."""
+    base = repo.commit({".gitignore": "__pycache__/\n.diffcone/\n", **FILES})
+    _write(repo, "pkg/ops.py", ADD_OPS_BROKEN)
+    args = ["run", "--repo", str(repo.path), "--base", base, "--head", "HEAD",
+            "--discover", "pytest", "--discover", "asv", "--command", PYTEST_NO_CACHE]  # fmt: skip
+    capsys.readouterr()
+    assert main(args) == 2
+    err = capsys.readouterr().err
+    assert "pkg/ops.py" in err and "--allow-mismatched-worktree" in err
+    assert main([*args, "--dry-run"]) == 2
+    assert main([*args, "--runner", "asv"]) == 2
+    # Allowed: nothing is selected, so nothing runs.
+    capsys.readouterr()
+    assert main([*args, "--allow-mismatched-worktree"]) == 0
+    assert "0 of 1 pytest target(s) selected" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
+def test_y20_run_with_evidence_checks_the_tree_for_the_plan_that_runs(repo, capsys, monkeypatch):
+    """The recording selects nothing (the changed ``g`` never ran), so the
+    tree was not checked; in another environment the static plan ran
+    instead, on a tree whose uncommitted edit breaks ``test_h``: exit 0."""
+    m = (
+        "def g():\n    return 1\n\n\n"
+        "def f(flag=False):\n    if flag:\n        return g()\n    return 1\n"
+    )
+    base = repo.commit(
+        {
+            ".gitignore": "__pycache__/\n.diffcone/\n",
+            "lib/__init__.py": "",
+            "lib/m.py": m,
+            "lib/o.py": "def h():\n    return 1\n",
+            "tests/__init__.py": "",
+            "tests/test_m.py": "from lib.m import f\n\n\ndef test_f():\n    assert f() == 1\n",
+            "tests/test_o.py": "from lib.o import h\n\n\ndef test_h():\n    assert h() == 1\n",
+        }
+    )
+    monkeypatch.setenv("MYVAR", "1")
+    repo.collect(command=PYTEST_NO_CACHE, env_variables=["MYVAR"])
+    repo.commit({"lib/m.py": m.replace("return 1\n\n\ndef f", "return 11\n\n\ndef f")})
+    _write(repo, "lib/o.py", "def h():\n    return 22\n")
+    args = ["run", "--repo", str(repo.path), "--base", base, "--head", "HEAD",
+            "--discover", "pytest", "--command", PYTEST_NO_CACHE, "--evidence", "auto"]  # fmt: skip
+    for value in ("1", "2"):  # the recording's environment, then another
+        monkeypatch.setenv("MYVAR", value)
+        capsys.readouterr()
+        assert main([*args, "--", "-q"]) == 2, value
+        assert "lib/o.py" in capsys.readouterr().err
+    # On the committed tree it runs: the static plan in the other environment.
+    repo.git("checkout", "--", "lib/o.py")
+    assert main([*args, "--", "-q"]) == 0
+    assert "ran the static plan instead" in capsys.readouterr().err
+
+
+def test_y22_uncollected_selected_tests_exit_3_beside_a_failing_test(repo, capfd, tmp_path):
+    """A selected class pytest does not collect (``__test__ = False``) beside
+    a selected test that fails: ``run`` exited 1, pytest's code, though the
+    run was short; and ``-o`` says which targets did not run."""
+    base = repo.commit(
+        {
+            ".gitignore": "__pycache__/\n.diffcone/\n",
+            "lib/__init__.py": "",
+            "lib/m.py": "def f():\n    return 1\n",
+            "tests/__init__.py": "",
+            "tests/test_m.py": "from lib.m import f\n\n\ndef test_f():\n    assert f() == 1\n",
+            "tests/test_n.py": (
+                "from lib.m import f\n\n\nclass TestN:\n    __test__ = False\n\n"
+                "    def test_g(self):\n        assert f() == 1\n"
+            ),
+        }
+    )
+    head = repo.commit({"lib/m.py": "def f():\n    return 2\n"})
+    out = tmp_path / "ran.json"
+    code = main(["run", "--repo", str(repo.path), "--base", base, "--head", head,
+                 "--discover", "pytest", "--command", PYTEST_NO_CACHE, "-o", str(out),
+                 "--", "-q"])  # fmt: skip
+    captured = capfd.readouterr()
+    assert "1 failed" in captured.out
+    assert code == 3, captured.err
+    assert "did not collect 1 selected target(s)" in captured.err
+    ran = json.loads(out.read_text())
+    assert ran["run"] == {
+        "not_collected": ["tests/test_n.py::TestN::test_g"],
+        "selection_plugin_missing": False,
+    }
+    assert sorted(t["runner_id"] for t in ran["selected_targets"]) == [
+        "tests/test_m.py::test_f",
+        "tests/test_n.py::TestN::test_g",
+    ]
+
+
+def test_y23_run_names_what_build_reads_set_aside(repo, capfd):
+    """A changed ``.env`` the tests' conftest reads, outside the roots and
+    named by no ``[build] reads`` pattern: the plan sets it aside and
+    selects nothing, and ``run`` said only "nothing selected"."""
+    conftest = (
+        "import os\nimport pathlib\n\n"
+        "for line in (pathlib.Path(__file__).resolve().parents[1] / '.env').read_text()"
+        ".splitlines():\n"
+        "    key, _, value = line.partition('=')\n    os.environ.setdefault(key, value)\n"
+    )
+    base = repo.commit(
+        {
+            ".gitignore": "__pycache__/\n.diffcone/\n",
+            "diffcone.toml": '[build]\nreads = ["cpp/**"]\n',
+            "cpp/a.cc": "int a(void) { return 1; }\n",
+            ".env": "PKG_MODE=fast\n",
+            "pyproject.toml": "[tool.pytest.ini_options]\npythonpath = ['src']\n",
+            "src/pkg/__init__.py": (
+                "import os\n\n\ndef mode():\n    return os.environ['PKG_MODE']\n"
+            ),
+            "tests/conftest.py": conftest,
+            "tests/test_mode.py": (
+                "from pkg import mode\n\n\ndef test_mode():\n    assert mode() == 'fast'\n"
+            ),
+        }
+    )
+    head = repo.commit({".env": "PKG_MODE=slow\n"})
+    code = main(["run", "--repo", str(repo.path), "--base", base, "--head", head,
+                 "--discover", "pytest", "--source-root", "src", "--source-root", "tests",
+                 "--command", PYTEST_NO_CACHE])  # fmt: skip
+    err = capfd.readouterr().err
+    assert code == 0, err
+    assert "[build] reads set aside 1 changed path(s)" in err and ": .env;" in err
 
 
 # --------------------------------------------------------------------------- validate: outcomes

@@ -54,7 +54,11 @@ didn't use the recording because the environment differed, it also has
 `evidence_not_used`: `reason` (`environment`), `differences` (what
 differed, as `run` prints it) and `recording_changed_its_environment`
 (`true` when this environment is the one the recording's own test run
-started in, so the recorded tests changed it).
+started in, so the recorded tests changed it). When the runner started, it
+also has `run`: `not_collected` (the selected tests pytest didn't collect,
+so they didn't run) and `selection_plugin_missing` (`true` when no pytest
+process loaded diffcone's selection plugin, so what ran isn't the
+selection).
 
 ## Snapshots
 
