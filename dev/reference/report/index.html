@@ -1233,7 +1233,11 @@ didn't use the recording because the environment differed, it also has
 <code>evidence_not_used</code>: <code>reason</code> (<code>environment</code>), <code>differences</code> (what
 differed, as <code>run</code> prints it) and <code>recording_changed_its_environment</code>
 (<code>true</code> when this environment is the one the recording's own test run
-started in, so the recorded tests changed it).</p>
+started in, so the recorded tests changed it). When the runner started, it
+also has <code>run</code>: <code>not_collected</code> (the selected tests pytest didn't collect,
+so they didn't run) and <code>selection_plugin_missing</code> (<code>true</code> when no pytest
+process loaded diffcone's selection plugin, so what ran isn't the
+selection).</p>
 <h2 id="snapshots">Snapshots<a class="headerlink" href="#snapshots" title="Permanent link">&para;</a></h2>
 <p><code>analysis.base</code> and <code>analysis.head</code> describe the two snapshots:</p>
 <table>

@@ -1218,12 +1218,12 @@ could skip tests. <code>3</code> wins when both apply. A manifest written by
 <p><code>run</code> exits with the runner's own code (0 when nothing ran because
 nothing was selected, or with <code>--dry-run</code>; pytest's <code>5</code>, no test ran, counts as <code>0</code>), and with <code>3</code>
 when a selected test was not collected or the selection plugin never ran
-(a wrapper in <code>--command</code> that does not pass its arguments on to pytest).
-It refuses with <code>2</code> when the
-working tree differs from the snapshot the plan analysed (unless
-<code>--allow-mismatched-worktree</code>) or <code>--repo</code> is not the top of a git
-repository, and with <code>3</code> when discovery may be incomplete (unless
-<code>--allow-incomplete-discovery</code>).</p>
+(a wrapper in <code>--command</code> that does not pass its arguments on to pytest),
+even when tests failed too. It refuses with <code>2</code> when the
+working tree differs from the snapshot the plan analysed, whatever the
+plan selects (unless <code>--allow-mismatched-worktree</code>), or <code>--repo</code> is not
+the top of a git repository, and with <code>3</code> when discovery may be
+incomplete (unless <code>--allow-incomplete-discovery</code>).</p>
 <p><code>validate</code> and <code>corpus</code> exit <code>0</code> when every outcome change was selected,
 <code>1</code> when some were missed, <code>2</code> on errors. A test that is not a target is
 not a miss when the plan said its discovery is incomplete (the plan's

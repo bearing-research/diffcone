@@ -1154,15 +1154,22 @@ before any test runs (see below).</p>
 <li>read a file that changed.</li>
 </ul>
 <p>It is also selected when its own code, class or module changed, when the
-fixtures, hooks or plugins around it changed, and when an
+fixtures, hooks or plugins around it changed, when an
 <a href="../../reference/declarations/#tests-to-run-on-every-change"><code>[[always_run]]</code></a>
-entry names it.</p>
+entry names it, and when it ran code an
+<a href="../../reference/declarations/"><code>[[edges]]</code></a> entry says depends on code a
+change reaches (a test's own code included).</p>
 <p>Some changes can't be judged from a recording, and diffcone says so in the
 report:</p>
 <ul>
 <li>Code that runs when a module is imported is planned from the code, as
   without evidence. The exception is a changed constant or class
   attribute, which selects the tests that read it.</li>
+<li>Adding or removing a method or class attribute of a class whose objects
+  your code passes to other functions (<code>check(Impl())</code>) selects every test
+  that created such an object or ran one of its methods: code outside your
+  project may look the member up without naming it (an <code>isinstance</code> check
+  against a <code>Protocol</code>, <code>dict(obj)</code> looking for <code>keys</code>, <code>copy</code>, <code>pickle</code>).</li>
 <li>The recorder starts before pytest loads any plugin (<code>-p</code> in <code>addopts</code>,
   <code>PYTEST_ADDOPTS</code> or your command) and before your own
   <code>sitecustomize.py</code>, so what those import is recorded. If a module of
@@ -1207,13 +1214,23 @@ report:</p>
   process),
   or whose child can't record itself. So is every test that runs
   while such a process is still running (a <code>multiprocessing</code> pool
-  reused by a later test), and a test whose child runs your code from
-  a <code>python -c</code> snippet or a script outside your source roots.</li>
+  reused by a later test), a test whose child runs your code from
+  a <code>python -c</code> snippet or a script outside your source roots, and a
+  test that runs code in a subinterpreter (<code>concurrent.interpreters</code>,
+  <code>InterpreterPoolExecutor</code>), wherever the interpreter was created.</li>
 <li><strong>Ignored.</strong> A <code>python -c</code> snippet that can't run your code (a
   version check), package-manager commands (<code>uv sync</code>, <code>uv pip</code>,
-  <code>uv python list</code>), and programs that only ask about the machine or
-  the repository (<code>uname</code>, <code>ps</code>, <code>locale -a</code>, <code>fc-list</code>, read-only
-  <code>git</code> commands such as <code>git rev-parse</code>), on every platform.</li>
+  <code>uv python list</code>), the <code>ninja</code> build an editable meson-python
+  install runs as your package is imported, and programs that only ask
+  about the machine or the repository (<code>uname</code>, <code>ps</code>, <code>locale -a</code>,
+  <code>fc-list</code>, read-only <code>git</code> commands such as <code>git rev-parse</code>), on
+  every platform. Not when the test points one at files of your
+  repository: a program of that name in your repository, an
+  environment variable naming a file or directory there
+  (<code>FONTCONFIG_FILE</code>, <code>GIT_DIR</code>, <code>GIT_CONFIG_GLOBAL</code>, <code>HOME</code>, ...), or
+  <code>git</code> run anywhere but the repository's root (a repository your
+  tests keep as data). Nor a <code>ninja</code> your test runs itself. Those
+  tests are always selected.</li>
 </ul>
 <p>A project <code>sitecustomize.py</code> still runs in every child.</p>
 <p><code>diffcone collect</code> ends by naming what made the most tests always
@@ -1239,7 +1256,9 @@ command only.
   to that test. So is what a thread the test started, or work it handed to
   a thread pool (<code>ThreadPoolExecutor</code>, <code>asyncio</code>'s <code>run_in_executor</code> and
   <code>to_thread</code>), runs after the test ended. Work handed off outside every
-  test, at import or in a hook, counts as part of that import or hook.
+  test, at import or in a hook, counts as part of that import or hook,
+  whichever thread runs it and whenever: also when a pool's thread was
+  started by a test.
 - Code that ran while pytest collected a test file (building the ids of
   parametrized tests, an <code>ids=</code> function, a <code>pytest_generate_tests</code> hook
   and what it calls) decides that file's tests: a change to it, or to what
@@ -1299,9 +1318,12 @@ match the recording:</p>
 <li>the Python implementation and version, and its <code>-O</code> setting;</li>
 <li>the platform and machine;</li>
 <li>the installed packages;</li>
-<li>your <code>PYTHONPATH</code>;</li>
+<li>your <code>PYTHONPATH</code> (every entry but the source roots diffcone adds);</li>
+<li>the interpreter's settings that change what code does, such as UTF-8
+  mode (<code>PYTHONUTF8</code>, <code>-X utf8</code>) and development mode;</li>
 <li>a few environment variables (<code>TZ</code>, <code>LANG</code>, <code>LC_ALL</code>,
-  <code>PYTHONWARNINGS</code>, <code>VIRTUAL_ENV</code>, <code>PYTEST_ADDOPTS</code>).</li>
+  <code>PYTHONWARNINGS</code>, <code>VIRTUAL_ENV</code>, <code>PYTEST_ADDOPTS</code>, <code>PYTEST_PLUGINS</code>,
+  <code>PYTEST_DISABLE_PLUGIN_AUTOLOAD</code>).</li>
 </ul>
 <p>It sets <code>PYTHONHASHSEED</code> to the recorded value itself. With <code>--dry-run</code>,
 nothing is checked.</p>

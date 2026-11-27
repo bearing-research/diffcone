@@ -1172,7 +1172,7 @@ submodule. diffcone can't see what your tests' build reads, so it assumes
 it reads all of them. In a repository that holds several components
 (a C++ library with Python, R and Java bindings, say), most of those
 changes belong to another component. Name the paths outside the source
-roots that your tests' build and CI do read under <code>[build]</code>:</p>
+roots that your tests' build, CI and test run do read under <code>[build]</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[build]</span>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">reads</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"cpp/**"</span><span class="p">,</span><span class="w"> </span><span class="s2">"format/**"</span><span class="p">,</span><span class="w"> </span><span class="s2">"testing"</span><span class="p">,</span><span class="w"> </span><span class="s2">".github/workflows/python.yml"</span><span class="p">,</span><span class="w"> </span><span class="s2">"ci/scripts/python_*"</span><span class="p">]</span>
 </code></pre></div>
@@ -1186,33 +1186,74 @@ roots that your tests' build and CI do read under <code>[build]</code>:</p>
 <tbody>
 <tr>
 <td><code>reads</code></td>
-<td>A list of patterns on paths from the repository root. <code>*</code> matches any characters, <code>/</code> included; <code>?</code> and <code>[...]</code> work as in shell patterns. A pattern also covers everything under a directory it names: <code>testing</code> covers the submodule <code>testing</code> and every file in it.</td>
+<td>A non-empty list of patterns on paths from the repository root (see below).</td>
 </tr>
 </tbody>
 </table>
-<p>A changed build file or submodule outside the source roots that no pattern
-covers is then set aside: it doesn't select anything by itself. The text
-report lists every path set aside, and the JSON report gives them under
-<code>build_reads.set_aside</code>. A plan that uses a recording treats a set-aside
-file like any other file: it selects the tests that read it.</p>
-<p>Some files are never set aside: a <code>conftest.py</code>, your runner's
-configuration at the repository root (<code>pytest.ini</code>, <code>pyproject.toml</code>), and
-ASV's configuration still select every test.</p>
+<p>How a pattern matches a path, exactly:</p>
+<ul>
+<li>A pattern is compared with the whole path from the repository root,
+  spelled with <code>/</code> and without a leading <code>/</code> or <code>./</code>. Case matters.</li>
+<li><code>*</code> matches any characters, <code>/</code> included, so <code>ci/scripts/python_*</code>
+  also covers <code>ci/scripts/python_x/run.sh</code>. <code>?</code> matches one character,
+  and <code>[...]</code> and <code>[!...]</code> a set of characters, as in shell patterns.</li>
+<li><code>**/</code> at the start of a pattern or right after a <code>/</code> matches any number
+  of directories, none included: <code>cpp/**/*.h</code> covers <code>cpp/version.h</code> and
+  <code>cpp/src/a.h</code>, and <code>**/CMakeLists.txt</code> covers the <code>CMakeLists.txt</code> at
+  the root as well as every other one.</li>
+<li>A pattern that matches a directory covers everything under it:
+  <code>testing</code> covers the submodule <code>testing</code> and every file in it, and
+  <code>cpp</code> every file under <code>cpp</code>. A pattern ending in <code>/</code> (<code>cpp/</code>) matches
+  no path, which is an error (see below).</li>
+</ul>
+<p>A changed file or submodule outside the source roots that diffcone counts
+as a build file, and that no pattern covers, is then set aside: it doesn't
+select anything by itself. That class is wider than build files. It holds
+everything outside the roots that diffcone doesn't read but assumes your
+tests depend on:</p>
+<ul>
+<li>compiled sources, build scripts and build configuration;</li>
+<li>dependency declarations and lock files (<code>requirements*.txt</code>, <code>uv.lock</code>);</li>
+<li>CI workflows and anything under <code>ci/</code>;</li>
+<li>submodules, including ones that hold test data;</li>
+<li><code>.env</code> files, which a test session may load;</li>
+<li>configuration files for checkers that pytest plugins run as tests
+  (<code>mypy.ini</code>, <code>ruff.toml</code>, <code>.flake8</code>, <code>.pylintrc</code>), and <code>.coveragerc</code>.</li>
+</ul>
+<p>So <code>reads</code> must name every such path your tests' run depends on, not only
+what the build compiles: a <code>.env</code> file the tests load, a data submodule
+they read. The text report and <code>diffcone run</code> list every path set aside,
+the JSON report gives them under <code>build_reads.set_aside</code>, and
+<a href="../../ci/#report-on-recent-runs"><code>diffcone report</code></a> lists them per job. A plan that uses a recording
+treats a set-aside file like any other file: it selects the tests that
+read it, and a submodule selects the tests that read any file in it.</p>
+<p>Some files are never set aside, whatever the patterns say, and still
+select every test:</p>
+<ul>
+<li>every <code>conftest.py</code>;</li>
+<li>pytest's configuration file (<code>pytest.ini</code>, <code>pyproject.toml</code>, <code>tox.ini</code>,
+  <code>setup.cfg</code>, <code>pytest.toml</code>) at the repository root, in a directory above
+  a source root, or wherever diffcone's discovery finds pytest reads it
+  (one below the root, a file given with <code>-c</code>);</li>
+<li>ASV's configuration (<code>asv.conf.json</code>, <code>asv.conf.jsonc</code>) anywhere.</li>
+</ul>
 <div class="admonition warning">
 <p class="admonition-title">This setting can hide a test that would fail</p>
 <p>Unlike everything else in <code>diffcone.toml</code>, <code>[build] reads</code> makes plans
-select fewer tests. If your build starts reading a path the list
-doesn't cover (a new workflow, a directory a CMake file adds), a change
-there is set aside and the tests it breaks aren't selected. Keep the
-list next to the build files it describes, review the set-aside paths
-in the report, and compare plans with full runs
-(<a href="../cli/"><code>diffcone check</code></a>) now and then.</p>
+select fewer tests. If your build or test run starts reading a path the
+list doesn't cover (a new workflow, a directory a CMake file adds, a
+new <code>.env</code> file), a change there is set aside and the tests it breaks
+aren't selected. Keep the list next to the build files it describes,
+review the set-aside paths in the report, and compare plans with full
+runs (<a href="../cli/"><code>diffcone check</code></a>) now and then.</p>
 </div>
 <p>To limit the damage of a stale list, diffcone:</p>
 <ul>
 <li>selects every test when the <code>[build]</code> table differs between the two
   snapshots it compares (or, with a recording, the recording's commit);</li>
-<li>reports a pattern that covers no path of its snapshot as an analysis
+<li>reports an empty <code>reads</code>, and a pattern that covers no path of its
+  snapshot outside the source roots (a stale one, or one that names only
+  paths inside the roots, which <code>reads</code> never changes), as an analysis
   error, which also selects every test;</li>
 <li>ignores the table when a source root is the repository itself, since
   nothing is outside the roots then.</li>
@@ -1228,8 +1269,9 @@ code. These are reported as an analysis error:</p>
 <li>an <code>always_run</code> entry without <code>targets</code>, or with an unknown <code>runner</code>;</li>
 <li>an <code>[index]</code> table that isn't a table, or an <code>exclude</code> that isn't a list
   of non-empty patterns;</li>
-<li>a <code>[build]</code> table that isn't a table, a <code>reads</code> that isn't a list of
-  non-empty patterns, or a <code>reads</code> pattern that covers no path;</li>
+<li>a <code>[build]</code> table that isn't a table, a <code>reads</code> that isn't a non-empty
+  list of non-empty patterns, or a <code>reads</code> pattern that covers no path
+  outside the source roots;</li>
 <li>an unknown key;</li>
 <li>a file that doesn't parse;</li>
 <li>a file that is there but can't be read (left unmerged by a conflicted

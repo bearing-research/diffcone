@@ -1107,7 +1107,9 @@ is close to, but not the same as, what <code>run</code> does:</p>
   <code>run</code> refuses and names the files. That includes any file under your
   source roots, a git-ignored <code>.py</code> beside tracked code, any
   <code>conftest.py</code>, pytest or ASV configuration, <code>diffcone.toml</code>, dependency
-  and lock files, and submodules. Plan with <code>--head WORKTREE</code>, or pass
+  and lock files, and submodules. It refuses even when nothing was
+  selected: "nothing to run" is a verdict on the planned code, not on
+  your edits. Plan with <code>--head WORKTREE</code>, or pass
   <code>--allow-mismatched-worktree</code>. Two kinds of file don't count: the
   results diffcone's CI actions write to <code>diffcone-results/</code> (and the file
   <code>run -o</code> names), and a git-ignored module that neither commit holds and

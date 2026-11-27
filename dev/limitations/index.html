@@ -1621,8 +1621,9 @@ of its sight:</p>
   on one test seeing another's cached result runs differently while
   recording;</li>
 <li>a program your tests start that is named like a read-only system
-  query (<code>git</code>, <code>uname</code>, <code>ps</code>, <code>locale</code>, <code>fc-list</code>) but is a script of yours on
-  <code>PATH</code>: it is taken for the system program and not followed;</li>
+  query (<code>git</code>, <code>uname</code>, <code>ps</code>, <code>locale</code>, <code>fc-list</code>) but is a script of
+  yours on <code>PATH</code> outside the repository (one inside it is followed):
+  it is taken for the system program and not followed;</li>
 <li>tests outside pytest's rootdir: with the rootdir in a subdirectory
   (a <code>pytest.ini</code> in <code>sub/</code>) and tests both under it and elsewhere
   (<code>pytest sub/tests tests</code>), records can be matched to the wrong
