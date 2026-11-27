@@ -158,9 +158,13 @@ def test_an_added_method_selects_the_tests_that_ran_an_unbounded_lookup(repo):
     )
     head = repo.commit({"pkg/api.py": api})
     plan = _plan(repo, base, head, ev)
-    # test_has would now find c. call() is bound: its callers name "a".
-    assert selected(plan) == {HAS}
+    # test_has would now find c. call() is bound: its callers name "a", but
+    # Ops is handed to other code (``call(Ops(), ...)``), which may look the
+    # new member up by no name the index sees, so every test building an Ops
+    # is selected too (audit round 9, Y15).
+    assert selected(plan) == {CALL_A, B, HAS}
     assert rules(plan, HAS) == {"lookup_site"}
+    assert rules(plan, CALL_A) == rules(plan, B) == {"executed_reader"}
 
 
 SETTINGS = {
@@ -323,6 +327,59 @@ def test_always_run_targets_are_selected_under_evidence(repo):
     assert selected(plan) == {ADD, MUL, *BENCHES}
     assert rules(plan, MUL) == {"always_run"}
     assert rules(plan, "bench_ops.TimeOps.time_mul") == {"always_run"}
+
+
+Y13_STATE = "DATA = {}\n\n\ndef read():\n    return DATA.get('v')\n"
+Y13_FILL = (
+    "from pkg import state\n\n\ndef _value():\n    return 1\n\n\n"
+    "def _fill():\n    state.DATA['v'] = _value()\n\n\ndef test_fill():\n    _fill()\n"
+)
+Y13_READ = "from pkg.state import read\n\n\ndef test_read():\n    assert read() == 1\n"
+
+
+# Each edit makes test_read fail, through what test_fill stores.
+Y13_EDITS = {
+    "test_fill": ("    _fill()\n", "    _fill() if False else None\n"),
+    "_fill": ("= _value()", "= _value() + 1"),
+    "_value": ("return 1", "return 2"),
+}
+
+
+@pytest.mark.parametrize(
+    ("declared", "changed"),
+    [
+        ("tests.test_a.test_fill", "test_fill"),
+        ("tests.test_a._fill", "_fill"),
+        ("tests.test_a.test_fill", "_value"),  # what ``to`` runs
+        ("tests.test_a", "_value"),  # a module: its members
+        ("pkg.state.DATA", "test_fill"),  # the state: code that can run the change writes it
+        ("pkg.state.DATA", "_value"),
+    ],
+    ids=["test", "helper", "callee", "module", "state", "state-callee"],
+)
+def test_y13_a_declared_edge_holds_for_a_body_change_of_test_code(repo, declared, changed):
+    """A test relying on state an earlier test's own code set up is what an
+    ``[[edges]]`` declaration is for (limitations.md, "with or without a
+    recording"): a body change of ``to``, or of anything it runs, selects
+    the tests whose record reaches ``from``, though the writer is isolated
+    test code, whose stores the recording otherwise credits to its own test."""
+    toml = (
+        f'[[edges]]\nfrom = "tests.test_b.test_read"\nto = "{declared}"\n'
+        'why = "test_read reads what test_fill stores"\n'
+    )
+    files = {
+        **BASE,
+        "pkg/state.py": Y13_STATE,
+        "tests/test_a.py": Y13_FILL,
+        "tests/test_b.py": Y13_READ,
+        "diffcone.toml": toml,
+    }
+    base, ev = _collected(repo, files)
+    head = repo.commit({"tests/test_a.py": Y13_FILL.replace(*Y13_EDITS[changed])})
+    plan = _plan(repo, base, head, ev)
+    assert selected(plan) == {"tests/test_a.py::test_fill", "tests/test_b.py::test_read"}
+    assert rules(plan, "tests/test_b.py::test_read") == {"declared_dependency"}
+    assert declared in reason(plan, "tests/test_b.py::test_read", "declared_dependency").detail
 
 
 def _environment_in_checkout(repo):
@@ -494,6 +551,76 @@ def test_the_deep_stack_takes_what_the_platform_accepts(monkeypatch, cap):
         assert seen == [max(limit, taken[0] // evidence_plan.FRAME_BYTES)]
     else:
         assert taken == [] and seen == [limit]
+
+
+def test_y11_deep_runs_in_threads_at_once_keep_the_limit_they_need():
+    """``corpus --jobs`` plans in a thread pool: a deep run ending first put
+    back the default limit under one still recursing (RecursionError), and
+    the last to end put back the first's raised limit. The limit is put back
+    when the last run ends."""
+    import threading
+
+    from diffcone import evidence_plan
+
+    limit = sys.getrecursionlimit()
+    second_started, first_done = threading.Event(), threading.Event()
+    outcomes: dict[str, object] = {}
+
+    def depth(n: int) -> int:
+        return 0 if n == 0 else 1 + depth(n - 1)
+
+    def first() -> None:
+        assert second_started.wait(30)
+
+    def second() -> None:
+        second_started.set()
+        assert first_done.wait(30)
+        outcomes["depth"] = depth(5 * limit)
+
+    def run(name: str, func) -> None:
+        try:
+            evidence_plan._deep(func)
+            outcomes[name] = "ok"
+        except BaseException as error:  # noqa: BLE001 - reported below
+            outcomes[name] = repr(error)
+        finally:
+            if name == "first":
+                first_done.set()
+
+    threads = [
+        threading.Thread(target=run, args=("first", first)),
+        threading.Thread(target=run, args=("second", second)),
+    ]
+    threads[0].start()
+    threads[1].start()
+    for thread in threads:
+        thread.join(60)
+    assert outcomes == {"first": "ok", "second": "ok", "depth": 5 * limit}
+    assert sys.getrecursionlimit() == limit
+
+
+def test_y11_a_stack_no_thread_starts_with_is_skipped(monkeypatch):
+    """A platform may take a stack size and then fail to start a thread with
+    it (RuntimeError: can't start new thread): the next size is tried, with
+    the limit raised for the one taken."""
+    import threading
+
+    from diffcone import evidence_plan
+
+    real = threading.Thread
+
+    class Thread(real):
+        def start(self) -> None:
+            if threading.stack_size() == evidence_plan.DEEP_STACKS[0]:
+                raise RuntimeError("can't start new thread")
+            super().start()
+
+    monkeypatch.setattr(evidence_plan.threading, "Thread", Thread)
+    limit = sys.getrecursionlimit()
+    seen: list[int] = []
+    evidence_plan._deep(lambda: seen.append(sys.getrecursionlimit()))
+    assert seen == [max(limit, evidence_plan.DEEP_STACKS[1] // evidence_plan.FRAME_BYTES)]
+    assert sys.getrecursionlimit() == limit
 
 
 FIXTURES = {
@@ -4323,9 +4450,10 @@ def test_evp3_a_test_class_instance_handed_to_a_library_lookup(repo):
     go = "    x = 0\n\n    def go(self):\n        return 1\n"
     head = repo.commit({"tests/test_helpers.py": helpers.replace("    x = 0\n", go)})
     plan = _evidence_plan(repo, base, head, ev)
-    # test_other runs the same lookup, but never holds a Helper.
-    # test_helpers reads ``Helper.x`` only (E8).
-    assert selected(plan) == {"tests/test_h.py::test_h"}
+    # test_other runs the same lookup, but never holds a Helper. test_helpers
+    # reads ``Helper.x`` only (E8), but it holds the class, which is handed to
+    # other code (``call(Helper(), ...)``; audit round 9, Y15).
+    assert selected(plan) == {"tests/test_h.py::test_h", "tests/test_helpers.py::test_helpers"}
 
 
 DATA_CHANGED = DATA_TEST.replace("[1, 2]", "[1, 2, 3]")
@@ -6882,6 +7010,93 @@ def test_v4_a_class_body_handing_its_namespace_on(repo, edit, ns, read):
     plan = _noop_plan(repo, base, head, evidence)
     assert "tests/test_check.py::test_check" in selected(plan)
     assert "tests/test_other.py::test_other" not in selected(plan)
+
+
+Y15_PROTOCOL = (
+    "from typing import Protocol, runtime_checkable\n\n\n@runtime_checkable\n"
+    "class SupportsClose(Protocol):\n    def close(self) -> None: ...\n\n\n"
+    "def closable(obj):\n    return isinstance(obj, SupportsClose)\n"
+)
+Y15_PAIRS = "def to_dict(obj):\n    return dict(obj)\n"
+Y15_IMPL = (
+    "class Impl:\n    def __iter__(self):\n        return iter([('a', 1)])\n\n"
+    "    def __getitem__(self, key):\n        return 2\n\n    def open(self):\n        return 1\n"
+)
+Y15_SUB = "from pkg.impl import Impl\n\n\nclass Sub(Impl):\n    pass\n"
+Y15_TESTS = {
+    "protocol": "from pkg.check import closable\nfrom pkg.impl import Impl\n\n\n"
+    "def test_check():\n    assert not closable(Impl())\n",
+    "dict": "from pkg.check import to_dict\nfrom pkg.impl import Impl\n\n\n"
+    "def test_check():\n    assert to_dict(Impl()) == {'a': 1}\n",
+    # A subclass's instances escape: they inherit the member.
+    "subclass": "from pkg.check import closable\nfrom pkg.sub import Sub\n\n\n"
+    "def test_check():\n    assert not closable(Sub())\n",
+}
+# A class attribute, which the class body binds.
+Y15_TESTS["attribute"] = Y15_TESTS["dict"]
+Y15_MEMBERS = {
+    "protocol": "\n    def close(self):\n        pass\n",
+    "dict": "\n    def keys(self):\n        return ['b']\n",
+    "subclass": "\n    def close(self):\n        pass\n",
+    "attribute": "\n    keys = _keys\n",
+}
+
+
+@pytest.mark.parametrize("edit", ["added", "deleted"])
+@pytest.mark.parametrize("use", list(Y15_TESTS))
+def test_y15_a_member_of_a_class_handed_to_other_code(repo, use, edit):
+    """An instance handed to library code can have any attribute looked up
+    off it, or none named: a ``runtime_checkable`` ``Protocol``'s
+    ``isinstance`` checks for ``close``, ``dict(obj)`` takes the mapping
+    path once ``keys`` exists. Nothing in the record shows the lookup, so
+    adding or deleting a member of a class whose instances escape (or a
+    subclass's do) reaches the code that can hold one, as the code referring
+    to such a class depends on its members in static planning: the code
+    naming the class or a subclass, and the methods of its hierarchy. A
+    class nothing hands on is planned as before (``test_open``)."""
+    impl = Y15_IMPL
+    if use == "attribute":
+        # The body names ``_keys`` on both sides: only the attribute comes or goes.
+        impl = "def _keys(self):\n    return ['b']\n\n\n" + impl.replace(
+            "class Impl:\n", "class Impl:\n    other = _keys\n\n"
+        )
+    with_member, without = impl + Y15_MEMBERS[use], impl
+    before, after = (without, with_member) if edit == "added" else (with_member, without)
+    check = Y15_TESTS[use]
+    if edit == "deleted":
+        check = check.replace("assert not closable", "assert closable").replace(
+            "{'a': 1}", "{'b': 2}"
+        )
+    base = repo.commit(
+        {
+            **BENCH_PKG,
+            "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+            "pkg/check.py": Y15_PAIRS if use in ("dict", "attribute") else Y15_PROTOCOL,
+            "pkg/impl.py": before,
+            "pkg/sub.py": Y15_SUB,
+            "pkg/other.py": "class Other:\n    def ping(self):\n        return 1\n",
+            "tests/test_check.py": check,
+            "tests/test_open.py": "from pkg.other import Other\n\n\n"
+            "def test_open():\n    assert Other().ping() == 1\n",
+            "tests/test_other.py": "def test_other():\n    assert True\n",
+        }
+    )
+    evidence = repo.collect()
+    head = repo.commit({"pkg/impl.py": after})
+    plan = _noop_plan(repo, base, head, evidence)
+    assert selected(plan) == {"tests/test_check.py::test_check"}
+    assert rules(plan, "tests/test_check.py::test_check") == {"executed_reader"}
+    assert plan.evidence["escalated_modules"] == []  # not ``Sub``'s, which names Impl
+    # Not escaped: a method added to ``Other`` reaches nothing new.
+    head = repo.commit(
+        {
+            "pkg/impl.py": before,
+            "pkg/other.py": "class Other:\n    def ping(self):\n        return 1\n\n"
+            "    def close(self):\n        pass\n",
+        }
+    )
+    plan = _noop_plan(repo, base, head, evidence)
+    assert selected(plan) == set()
 
 
 # What a function's decorators, defaults and annotations write is written

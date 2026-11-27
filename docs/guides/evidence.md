@@ -92,9 +92,11 @@ A test is selected when, in its recorded run, it:
 - read a file that changed.
 
 It is also selected when its own code, class or module changed, when the
-fixtures, hooks or plugins around it changed, and when an
+fixtures, hooks or plugins around it changed, when an
 [`[[always_run]]`](../reference/declarations.md#tests-to-run-on-every-change)
-entry names it.
+entry names it, and when it ran code an
+[`[[edges]]`](../reference/declarations.md) entry says depends on code a
+change reaches (a test's own code included).
 
 Some changes can't be judged from a recording, and diffcone says so in the
 report:
@@ -102,6 +104,11 @@ report:
 - Code that runs when a module is imported is planned from the code, as
   without evidence. The exception is a changed constant or class
   attribute, which selects the tests that read it.
+- Adding or removing a method or class attribute of a class whose objects
+  your code passes to other functions (`check(Impl())`) selects every test
+  that created such an object or ran one of its methods: code outside your
+  project may look the member up without naming it (an `isinstance` check
+  against a `Protocol`, `dict(obj)` looking for `keys`, `copy`, `pickle`).
 - The recorder starts before pytest loads any plugin (`-p` in `addopts`,
   `PYTEST_ADDOPTS` or your command) and before your own
   `sitecustomize.py`, so what those import is recorded. If a module of
