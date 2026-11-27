@@ -144,13 +144,23 @@ report:
       process),
       or whose child can't record itself. So is every test that runs
       while such a process is still running (a `multiprocessing` pool
-      reused by a later test), and a test whose child runs your code from
-      a `python -c` snippet or a script outside your source roots.
+      reused by a later test), a test whose child runs your code from
+      a `python -c` snippet or a script outside your source roots, and a
+      test that runs code in a subinterpreter (`concurrent.interpreters`,
+      `InterpreterPoolExecutor`), wherever the interpreter was created.
     - **Ignored.** A `python -c` snippet that can't run your code (a
       version check), package-manager commands (`uv sync`, `uv pip`,
-      `uv python list`), and programs that only ask about the machine or
-      the repository (`uname`, `ps`, `locale -a`, `fc-list`, read-only
-      `git` commands such as `git rev-parse`), on every platform.
+      `uv python list`), the `ninja` build an editable meson-python
+      install runs as your package is imported, and programs that only ask
+      about the machine or the repository (`uname`, `ps`, `locale -a`,
+      `fc-list`, read-only `git` commands such as `git rev-parse`), on
+      every platform. Not when the test points one at files of your
+      repository: a program of that name in your repository, an
+      environment variable naming a file or directory there
+      (`FONTCONFIG_FILE`, `GIT_DIR`, `GIT_CONFIG_GLOBAL`, `HOME`, ...), or
+      `git` run anywhere but the repository's root (a repository your
+      tests keep as data). Nor a `ninja` your test runs itself. Those
+      tests are always selected.
 
     A project `sitecustomize.py` still runs in every child.
 
@@ -177,7 +187,9 @@ report:
   to that test. So is what a thread the test started, or work it handed to
   a thread pool (`ThreadPoolExecutor`, `asyncio`'s `run_in_executor` and
   `to_thread`), runs after the test ended. Work handed off outside every
-  test, at import or in a hook, counts as part of that import or hook.
+  test, at import or in a hook, counts as part of that import or hook,
+  whichever thread runs it and whenever: also when a pool's thread was
+  started by a test.
 - Code that ran while pytest collected a test file (building the ids of
   parametrized tests, an `ids=` function, a `pytest_generate_tests` hook
   and what it calls) decides that file's tests: a change to it, or to what
@@ -240,9 +252,12 @@ match the recording:
 - the Python implementation and version, and its `-O` setting;
 - the platform and machine;
 - the installed packages;
-- your `PYTHONPATH`;
+- your `PYTHONPATH` (every entry but the source roots diffcone adds);
+- the interpreter's settings that change what code does, such as UTF-8
+  mode (`PYTHONUTF8`, `-X utf8`) and development mode;
 - a few environment variables (`TZ`, `LANG`, `LC_ALL`,
-  `PYTHONWARNINGS`, `VIRTUAL_ENV`, `PYTEST_ADDOPTS`).
+  `PYTHONWARNINGS`, `VIRTUAL_ENV`, `PYTEST_ADDOPTS`, `PYTEST_PLUGINS`,
+  `PYTEST_DISABLE_PLUGIN_AUTOLOAD`).
 
 It sets `PYTHONHASHSEED` to the recorded value itself. With `--dry-run`,
 nothing is checked.

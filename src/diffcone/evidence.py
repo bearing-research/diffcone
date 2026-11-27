@@ -17,6 +17,7 @@ import array
 import contextlib
 import glob
 import json
+import math
 import os
 import shlex
 import sqlite3
@@ -60,7 +61,13 @@ from diffcone.model import (
 # 7: a test some of whose cases did not run has no record (``cases``; it was
 # a record of the cases that ran), and ``PYTEST_ADDOPTS`` is part of the
 # environment.
-STORE_FORMAT = 7
+# 8: a test is credited with every instance of the shared fixtures it used
+# that set up before it ended (it was the instance it used only); work
+# handed off outside every window is its phase's; subinterpreter calls,
+# and system queries pointed at the checkout, flag; the environment holds
+# ``PYTEST_PLUGINS``, ``PYTEST_DISABLE_PLUGIN_AUTOLOAD``, the interpreter's
+# flags and the ``PYTHONPATH`` entries inside the checkout.
+STORE_FORMAT = 8
 # The test started a process whose execution is not seen: another way than
 # subprocess.Popen, or one that recorded nothing (child.py).
 FLAG_SUBPROCESS = 1
@@ -336,10 +343,15 @@ class _Raw:
     # The environment a process started in, when its run changed it.
     environment_at_start: dict | None = None
     collect_by: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
-    # A shared fixture (by key) -> what its setup ran in any process, and
-    # the shared fixtures each test used.
+    # A shared fixture instance (by process and key) -> what its setup ran,
+    # and when it started (``time.monotonic_ns`` in that process); the
+    # fixture definitions each test used, and when it ended in each process
+    # that ran it; each process's clocks at its start.
     fixtures: dict[str, tuple[set[str], set[str], set[str], int]] = field(default_factory=dict)
+    fixture_starts: dict[str, tuple[str, str, int]] = field(default_factory=dict)
     test_fixtures: dict[str, set[str]] = field(default_factory=dict)
+    test_ends: dict[str, dict[str, float]] = field(default_factory=dict)
+    clocks: dict[str, tuple[int, int]] = field(default_factory=dict)
     # Symbols that ran outside every test window through their annotations'
     # code (``__annotate__``), and through any other code.
     outside_annotations: set[str] = field(default_factory=set)
@@ -614,7 +626,14 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             if c_flags:
                 raw.import_flagged.add(module)
         cause_table = data.get("causes", [])
-        for key, window in data.get("fixtures", {}).items():
+        clock = data.get("clock")
+        if clock is not None:
+            raw.clocks[pid] = (int(clock[0]), int(clock[1]))
+        for instance_key, window in data.get("fixtures", {}).items():
+            # Its definition: the key without the node it was set up for.
+            definition = instance_key.rpartition("\x1f")[0]
+            key = f"{pid}\x1e{instance_key}"
+            raw.fixture_starts[key] = (pid, definition, int(window.get("start", 0)))
             _fold_window(
                 raw.fixtures,
                 key,
@@ -656,6 +675,12 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
                 )
                 raw.causes[name] |= _window_causes(record, cause_table, children)
                 raw.test_fixtures.setdefault(name, set()).update(record.get("fixtures", ()))
+                ends = raw.test_ends.setdefault(name, {})
+                # A record without an end (cut short) could have been
+                # reached by any instance.
+                end = record.get("end", math.inf) if record.get("fixtures") else None
+                if end is not None:
+                    ends[pid] = max(ends.get(pid, 0), end)
     orphans = [
         p
         for p in glob.glob(str(directory / "tests-*.bin"))
@@ -669,19 +694,6 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
     if any(env != environments[0] for env in environments):
         raise EvidenceError("the test processes ran in different environments")
     raw.environment = environments[0]
-    # A shared fixture set up in several processes (xdist workers) may have
-    # run its real work in one only (a file lock, a cache file the others
-    # read): every test using it is credited with what it ran anywhere.
-    for name, keys in raw.test_fixtures.items():
-        symbols, paths, dirs, flags = raw.tests[name]
-        for key in keys:
-            f_symbols, f_paths, f_dirs, f_flags = raw.fixtures.get(key, (set(), set(), set(), 0))
-            raw.causes[name] |= raw.fixture_causes.get(key, set())
-            symbols |= f_symbols
-            paths |= f_paths
-            dirs |= f_dirs
-            flags |= f_flags
-        raw.tests[name] = (symbols, paths, dirs, flags)
     # A test's record is whole only if every case collected ran, in some
     # process (an xdist worker collects them all and runs its share). One
     # case deselected, or not reached after a stop, leaves a record of the
@@ -693,6 +705,66 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
         or {tuple(ran_cases.get(name, ()))} != collected_cases[name]
     }
     return raw
+
+
+# How far apart the processes' monotonic clocks may be (each process's wall
+# clock less its monotonic one, as it started) for the fold to order a
+# fixture instance of one process against a test of another.
+CLOCK_SPREAD_NS = 1_000_000_000
+
+
+def _credit_fixtures(
+    raw: _Raw, every: bool = False
+) -> dict[str, tuple[set[str], set[str], set[str], int]]:
+    """The tests' records, each credited with what the instances of the
+    shared fixtures it used ran (``collect.fixture_windows``). Any instance
+    of a definition, in any process: a later instance may reuse what an
+    earlier one computed (a dict in the conftest, an attribute on a library
+    module), and a fixture set up in several processes (xdist workers) may
+    run its real work in one only (a file lock, a cache file the others
+    read). Except an instance whose setup started after the test ended, in
+    the same process or, when the processes' monotonic clocks agree
+    (``clocks``), in any: its work cannot have reached the test. With
+    ``every``, every instance (what does not depend on the order the tests
+    ran in, for the reverse run's comparison)."""
+    tests = dict(raw.tests)
+    offsets = [wall - mono for wall, mono in raw.clocks.values()]
+    spread = max(offsets) - min(offsets) if offsets else 0
+    ordered = spread <= CLOCK_SPREAD_NS
+    by_definition: dict[str, list[str]] = defaultdict(list)
+    for key, (_, definition, _) in sorted(raw.fixture_starts.items()):
+        by_definition[definition].append(key)
+    for name, definitions in raw.test_fixtures.items():
+        if not definitions or name not in raw.tests:  # no record kept (``partial``)
+            continue
+        ends = raw.test_ends.get(name, {})
+
+        def reached(key: str, ends=ends) -> bool:
+            """Whether the instance ``key`` set up before the test ended."""
+            pid, _, start = raw.fixture_starts[key]
+            if every or not ends or (pid in ends and start <= ends[pid]):
+                return True
+            if ordered and pid in raw.clocks and all(p in raw.clocks for p in ends):
+                return start <= max(ends.values()) + spread
+            # Another process's, with no order between the two: the test's
+            # cases that ran there may have come after it.
+            return any(p != pid for p in ends)
+
+        own_symbols, own_paths, own_dirs, flags = raw.tests[name]
+        symbols, paths, dirs = set(own_symbols), set(own_paths), set(own_dirs)
+        for definition in sorted(definitions):
+            for key in by_definition.get(definition, ()):
+                if not reached(key):
+                    continue
+                f_symbols, f_paths, f_dirs, f_flags = raw.fixtures[key]
+                if not every:
+                    raw.causes[name] |= raw.fixture_causes.get(key, set())
+                symbols |= f_symbols
+                paths |= f_paths
+                dirs |= f_dirs
+                flags |= f_flags
+        tests[name] = (symbols, paths, dirs, flags)
+    return tests
 
 
 def _window_causes(window: dict, cause_table: list[str], children: _Children) -> set[str]:
@@ -795,13 +867,20 @@ def fold(
     tests: dict[str, tuple[set[str], set[str], set[str], int]] = {}
     # Stability is judged on symbols and tracked data files. pytest stats
     # package directories and ``__init__`` files lazily, during whichever
-    # test runs first, and that is not the test's own behaviour.
+    # test runs first, and that is not the test's own behaviour. A shared
+    # fixture's instances are compared whole: which of them set up before
+    # a test ended depends on the order the tests ran in.
     data_files = set(index.other_files)
-    for raw in raws:
-        for name, (symbols, paths, dirs, flags) in raw.tests.items():
+    credited = [_credit_fixtures(raw) for raw in raws]
+    compared = [_credit_fixtures(raw, every=True) for raw in raws] if len(raws) > 1 else credited
+    first: dict[str, tuple[set[str], set[str]]] = {}
+    for raw, records, view in zip(raws, credited, compared, strict=True):
+        for name, (symbols, paths, dirs, flags) in records.items():
+            v_symbols, v_paths = view[name][0], view[name][1]
             if name in tests:
                 before = tests[name]
-                if before[0] != symbols or (before[1] ^ paths) & data_files:
+                b_symbols, b_paths = first[name]
+                if b_symbols != v_symbols or (b_paths ^ v_paths) & data_files:
                     unstable.add(name)
                 tests[name] = (
                     before[0] | symbols,
@@ -812,6 +891,7 @@ def fold(
             else:
                 if len(raws) > 1 and raw is not raws[0]:
                     unstable.add(name)  # ran in one order only
+                first[name] = (v_symbols, v_paths)
                 tests[name] = (set(symbols), set(paths), set(dirs), flags)
     if len(raws) > 1:
         unstable |= set(raws[0].tests) - set(raws[1].tests)
@@ -1408,7 +1488,13 @@ def environment_differences(recorded: dict, met: dict) -> list[str]:
         "distributions",
         "variables",
         "pythonpath",
+        "flags",
     }
+    flags = (recorded.get("flags") or {}, met.get("flags") or {})
+    for name in sorted({*flags[0], *flags[1]}):
+        then, now = flags[0].get(name, missing), flags[1].get(name, missing)
+        if then != now:
+            out.append(f"sys.flags.{name}: {shown(then)} recorded, {shown(now)} now")
     for key in sorted({*recorded, *met} - listed):
         if recorded.get(key, missing) != met.get(key, missing):
             out.append(
