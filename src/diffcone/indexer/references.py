@@ -69,7 +69,7 @@ import ast
 from collections.abc import Collection, Sequence
 from typing import TYPE_CHECKING
 
-from diffcone.indexer.aliases import STORED, VALUE, name_sources
+from diffcone.indexer.aliases import ELEMENT, ENTERED, STORED, VALUE, name_contents, name_sources
 from diffcone.indexer.facts import _AttrRef, _AttrWrite, _CallSite, _ParamDynamic, apply_fact
 from diffcone.indexer.literals import _collect_store_names, _LocalBindings
 from diffcone.indexer.patches import (
@@ -481,6 +481,15 @@ class _ReferenceCollector(ast.NodeVisitor):
         self._binders: list[ast.AST] = []
         self._alias_memo: dict[tuple, tuple[Scope, frozenset, frozenset, dict[str, bool]]] = {}
         self._alias_trace: set[tuple[int, str]] = set()
+        # ``_flow``: what a local name may hold, per (scope node, name), the
+        # names being traced, whether a trace was cut short (a cycle, the
+        # depth), a comprehension's own names while its items are traced,
+        # and what each scope stores into its names (aliases.name_contents).
+        self._flow_memo: dict[tuple[int, str], tuple[ast.AST, frozenset[tuple[str, str]]]] = {}
+        self._flow_active: set[tuple[int, str]] = set()
+        self._flow_cut = 0
+        self._flow_extra: list[dict[str, list[ast.expr]]] = []
+        self._content_maps: dict[int, tuple[ast.AST, tuple[dict, dict[str, int]]]] = {}
 
     def visit(self, node: ast.AST) -> None:
         self._stack.append(node)
@@ -2306,7 +2315,43 @@ class _ReferenceCollector(ast.NodeVisitor):
                     if not copy or held is not None:
                         self.indexer.out.whole_returns.add((self.source, root))
             observe_return(self, node.value)
+        self._flow_return(node.value)
         self.generic_visit(node)
+
+    def visit_Yield(self, node: ast.Yield) -> None:
+        self._flow_return(node.value)
+        self.generic_visit(node)
+
+    def visit_YieldFrom(self, node: ast.YieldFrom) -> None:
+        self._flow_return(node.value, element=True)
+        self.generic_visit(node)
+
+    def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
+        if not self._flow_local_target(node.target):
+            self._flow_bind(node.target, None, self._element_flow(node.iter, 0))
+        self.generic_visit(node)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self.visit_For(node)
+
+    def visit_With(self, node: ast.With | ast.AsyncWith) -> None:
+        for item in node.items:
+            target = item.optional_vars
+            if target is not None and not self._flow_local_target(target):
+                items = self._flow(item.context_expr)
+                items |= {("meth", _item_key("__enter__", i)) for i in items}
+                self._flow_bind(target, None, items)
+        self.generic_visit(node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        self.visit_With(node)
+
+    def _flow_local_target(self, target: ast.expr) -> bool:
+        """A loop or ``with`` target that is a local name: traced where it
+        is used (``_local_flow``), not bound here."""
+        return isinstance(target, ast.Name) and (
+            self._is_local(target.id) or target.id in self.scope.locals
+        )
 
     def _namespace_item(self, key: ast.expr | None) -> dict[str, bool]:
         """``globals()[key]``: this module's names ``key`` may be, or each
@@ -2717,10 +2762,9 @@ class _ReferenceCollector(ast.NodeVisitor):
             self._stash_value(target, node.value)
         undone = self.scope.module.undone()
         for target in node.targets:
+            # What a holder holds, or is handed on (``handler.stream = W()``).
+            self._flow_bind(target, node.value)
             if isinstance(target, ast.Attribute) and not self._is_self(target.value):
-                # ``handler.stream = W()``: stored on an object other code
-                # holds, which may call any method of it by name.
-                self._hand_on(node.value)
                 if target.attr == "plugins" and isinstance(node.value, (ast.List, ast.Tuple)):
                     # ``pytester.plugins = ["pkg.plug"]``: loaded into the
                     # sessions it runs.
@@ -2748,6 +2792,9 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         observe_augassign(self, node)
+        # ``self.items += [C()]``: stored into what the target holds.
+        if not (isinstance(node.target, ast.Name) and self._is_local(node.target.id)):
+            self._flow_store(node.target, self._flow(node.value))
         # ``self.n += 1``: what an immutable ``n`` becomes is one again.
         self._stash_value(node.target, node.value)
         self._write_only[id(node.target)] = _READ  # ``mod.X += 1`` reads it
@@ -2764,6 +2811,7 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is not None:
+            self._flow_bind(node.target, node.value)
             observe_assign(self, [node.target])
             self._process_store(node.target)
             self._mutation_target(node.target, True)
@@ -3305,18 +3353,22 @@ class _ReferenceCollector(ast.NodeVisitor):
                     )
 
     def _handed_instances(self, node: ast.Call, parts: list[str] | None) -> None:
-        """An instance of a known class (``C()``, the class itself, a local
-        bound once to one, a factory's result) handed to a callee the
-        analysis does not follow into: a library's, a builtin that reads
-        more than dunders (``dict(x)``, ``vars(x)``, keywords such as
-        ``print(file=w)``), a method on a receiver of unknown type
-        (``items.append(C())``), a class with no in-scope constructor, or
-        ``**x``. Whoever holds it may call any method of it by name, so the
-        class escapes (``SourceIndex.escaped_classes``); a call site of an
-        in-scope function records what it is handed already. Not the class
-        handed to ``object.__new__`` alone (``cls.__new__(cls)`` where no
-        class of the family defines ``__new__`` and every base is in scope),
-        which reads no member by name (audit round 6, T22)."""
+        """What a call hands its callee, when the callee may read any
+        attribute of it by name: every argument, whatever the callee (a
+        library's function, a method on a receiver of unknown type such as
+        ``items.append(C())``, an in-scope function or constructor, which may
+        hand it on in turn), a builtin that reads more than dunders
+        (``dict(x)``, ``vars(x)``, the value ``setattr`` stores, keywords
+        such as ``print(file=w)``), and ``**x``; what each may be is
+        ``_flow``'s (an instance made there, a name holding one, a
+        container, a factory's result, an attribute holding one: audit
+        round 9, Y25), and its classes escape
+        (``SourceIndex.escaped_classes``). Not the class handed to
+        ``object.__new__`` alone (``cls.__new__(cls)`` where no class of the
+        family defines ``__new__`` and every base is in scope), which reads
+        no member by name (audit round 6, T22); nor ``self`` handed to a
+        method of its own class's hierarchy (``Base.__init__(self)``) as
+        any subclass's instance (the call site counts the class itself)."""
         if len(node.args) == 1 and not node.keywords:
             made = self._made_instance(node)
             if made is not None and made[0] != "call" and self._allocates_only(*made):
@@ -3325,30 +3377,35 @@ class _ReferenceCollector(ast.NodeVisitor):
             if keyword.arg is None:
                 self._hand_on(keyword.value)  # ``f(**obj)`` calls ``obj.keys()``
         values = [a for a in node.args if not isinstance(a, ast.Starred)]
+        values += [a.value for a in node.args if isinstance(a, ast.Starred)]
         keywords = [k.value for k in node.keywords if k.arg is not None]
         if parts is not None:
             if len(parts) == 1 and not self._is_shadowed(parts[0]):
-                if parts[0] not in ("dict", "vars"):
+                if parts[0] == "setattr":
+                    values = node.args[2:3]  # stored where other code may read it
+                elif parts[0] not in ("dict", "vars"):
                     values = []  # a builtin reads dunders of its positional arguments
             elif self._canonical_names(parts) & TYPE_ONLY_CALLS:
                 return  # ``cast(C, x)``, ``TypeVar("T", bound=C)``: the class as a type
-            else:
-                target = self.indexer.resolve_chain(parts, self.scope)
-                if isinstance(target, Resolved) and not target.detail:
-                    symbol = self.indexer.index.symbols.get(target.symbol)
-                    if symbol is not None and symbol.kind in (
-                        SymbolKind.FUNCTION,
-                        SymbolKind.METHOD,
-                    ):
-                        return  # a call site: positional_classes and keyword_classes
-                    if symbol is not None and symbol.kind == SymbolKind.CLASS:
-                        init = self.indexer.lookup_in_class(
-                            symbol.id, "__init__", dispatch=target.receiver
-                        )
-                        if isinstance(init, Resolved) and not init.detail:
-                            return
+            elif self.scope.self_class is not None and self._own_method(parts):
+                values = [v for v in values if not self._is_self(v)]
         for value in [*values, *keywords]:
             self._hand_on(value)
+
+    def _own_method(self, parts: list[str]) -> bool:
+        """Whether the call ``parts`` names resolves to a method of a class
+        of ``self``'s hierarchy (``Base.__init__(self)``,
+        ``self.helper(self)``): handing it ``self`` hands it on to no one."""
+        target = self.indexer.resolve_chain(parts, self.scope)
+        if not isinstance(target, Resolved) or target.detail:
+            return False
+        symbol = self.indexer.index.symbols.get(target.symbol)
+        if symbol is None or symbol.kind != SymbolKind.METHOD or symbol.container is None:
+            return False
+        cls = self.scope.self_class
+        assert cls is not None
+        owner = symbol.container
+        return owner in self.indexer._mro(cls) or owner in self.indexer._descendants.get(cls, ())
 
     def _allocates_only(self, how: str, cls: str) -> bool:
         """Whether a ``__new__`` call making ``cls`` (``_made_instance``)
@@ -3369,18 +3426,436 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def _hand_on(self, expr: ast.expr) -> None:
         """``expr`` is given to code that may read any attribute of it by
-        name: the class it is an instance of, when it says (``C()``, ``C``,
-        a local bound once to one), or the factory whose result it is."""
-        cls = self._argument_class(expr)
-        if cls is None and isinstance(expr, ast.Name) and expr.id in self.scope.locals:
-            source = self._local_source(expr.id)
-            cls = self._argument_class(source) if source is not None else None
-        if cls is not None:
-            self.indexer.out.handed_instances.add(("class", cls))
+        name: whatever ``_flow`` says it may be is handed on
+        (``handed_instances``; Indexer._escaped_classes)."""
+        self.indexer.out.handed_instances.update(self._flow(expr))
+
+    def _hand_on_items(self, items: Collection[tuple[str, str]]) -> None:
+        self.indexer.out.handed_instances.update(items)
+
+    def _flow(self, expr: ast.expr, depth: int = 0) -> set[tuple[str, str]]:
+        """What ``expr`` may evaluate to, for what is handed on (audit round
+        9, Y25), as items joined after pass 2 (Indexer._escaped_classes):
+        ``class`` (an instance of the class, or the class), ``family`` (of
+        the class or of an in-scope subclass: ``self``, ``cls()``),
+        ``factory`` (what a call of the function returns), ``fn`` (the
+        function itself), ``attr`` (``C.x``: what C's instances, a base's
+        or a subclass's, or C itself hold under ``x``), ``var`` (what a
+        module variable holds), and the attribute, method result or call
+        result of another item (``get``, ``meth``, ``result``:
+        ``name\\0kind\\0id``). Through conditions, ``and``/``or``, a walrus,
+        ``await``, a starred item, operators, container displays and
+        comprehensions (their items), a subscript (an item of the container,
+        or what its ``__getitem__`` returns), a lambda (its body), the
+        builtins that give back what they are handed (``list(x)``,
+        ``sorted(x)``, ``next(it)``, ``max(a, b)``, ``type(x)``,
+        ``getattr(x, "n")``), and a local name: every binding of it (an
+        element of what a loop iterates, what ``with`` enters) and what is
+        stored into its object."""
+        if depth > 12:
+            self._flow_cut += 1
+            return set()
+        d = depth + 1
+        if isinstance(expr, ast.IfExp):
+            return self._flow(expr.body, d) | self._flow(expr.orelse, d)
+        if isinstance(expr, ast.BoolOp):
+            return {i for v in expr.values for i in self._flow(v, d)}
+        if isinstance(expr, ast.BinOp):
+            return self._flow(expr.left, d) | self._flow(expr.right, d)
+        if isinstance(expr, (ast.NamedExpr, ast.Await, ast.Starred)):
+            return self._flow(expr.value, d)
+        if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+            return {i for v in expr.elts for i in self._flow(v, d)}
+        if isinstance(expr, ast.Dict):
+            parts = [*(k for k in expr.keys if k is not None), *expr.values]
+            return {i for v in parts for i in self._flow(v, d)}
+        if isinstance(expr, _COMPREHENSIONS):
+            return self._comprehension_flow(expr, d)
+        if isinstance(expr, ast.Lambda):
+            return self._flow(expr.body, d)
+        if isinstance(expr, ast.Subscript):
+            base = self._flow(expr.value, d)
+            return base | {("meth", _item_key("__getitem__", i)) for i in base}
+        if isinstance(expr, ast.Name):
+            return self._name_flow(expr.id, d)
+        if isinstance(expr, ast.Attribute):
+            return self._attribute_flow(expr, d)
+        if isinstance(expr, ast.Call):
+            return self._call_flow(expr, d)
+        return set()
+
+    def _flow_strings(self, expr: ast.expr) -> tuple[str, ...] | None:
+        """The strings ``expr`` may be (``scope.string_candidates``), a
+        comprehension's own name being traced included (``getattr(o, f)
+        for f in cls._ATTRS``)."""
+        if isinstance(expr, ast.Name):
+            for own in reversed(self._flow_extra):
+                if expr.id in own:
+                    found: list[str] = []
+                    for value in own[expr.id]:
+                        names = self.scope.string_candidates(value)
+                        if names is None:
+                            return None
+                        found.extend(names)
+                    return tuple(dict.fromkeys(found))
+        return self.scope.string_candidates(expr)
+
+    def _comprehension_flow(
+        self, expr: ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp, depth: int
+    ) -> set[tuple[str, str]]:
+        own: dict[str, list[ast.expr]] = {}
+        for gen in expr.generators:
+            for target in ast.walk(gen.target):
+                if isinstance(target, ast.Name):
+                    own.setdefault(target.id, []).append(gen.iter)
+        self._flow_extra.append(own)
+        try:
+            if isinstance(expr, ast.DictComp):
+                return self._flow(expr.key, depth) | self._flow(expr.value, depth)
+            return self._flow(expr.elt, depth)
+        finally:
+            self._flow_extra.pop()
+
+    def _name_flow(self, name: str, depth: int) -> set[tuple[str, str]]:
+        scope = self.scope
+        for level in range(len(self._flow_extra) - 1, -1, -1):
+            own = self._flow_extra[level]
+            if name in own:
+                found: set[tuple[str, str]] = set()
+                # An iterable sees the comprehensions around it and the
+                # earlier targets of its own, not the name itself.
+                saved = self._flow_extra
+                self._flow_extra = [
+                    *saved[:level],
+                    {k: v for k, v in own.items() if k != name},
+                ]
+                try:
+                    for value in own[name]:
+                        found |= self._element_flow(value, depth)
+                finally:
+                    self._flow_extra = saved
+                return found
+        if name == scope.self_name and scope.self_class is not None:
+            return {("family", scope.self_class)}
+        if name in scope.param_aliases:
+            return {("var", scope.param_aliases[name])}
+        if self._is_local(name):
+            return self._local_flow(name, depth)
+        return self._symbol_items([name])
+
+    def _element_flow(self, value: ast.expr, depth: int) -> set[tuple[str, str]]:
+        """What iterating ``value`` gives: its items, or what its class's
+        ``__iter__`` yields."""
+        items = self._flow(value, depth)
+        return items | {("meth", _item_key("__iter__", i)) for i in items}
+
+    def _local_flow(self, name: str, depth: int) -> set[tuple[str, str]]:
+        """``_flow`` of a name the scope binds: what each binding gives it
+        (``aliases.name_sources``) and what is stored into its object
+        (``aliases.name_contents``). Kept per scope and name unless the
+        trace was cut short (a cycle, ``n = n.next``, or the depth)."""
+        owner = self._binding_scope(name)
+        if owner is None:
+            return set()
+        key = (id(owner), name)
+        kept = self._flow_memo.get(key)
+        if kept is not None and kept[0] is owner:
+            return set(kept[1])
+        if key in self._flow_active:
+            self._flow_cut += 1
+            return set()
+        self._flow_active.add(key)
+        cut = self._flow_cut
+        found: set[tuple[str, str]] = set()
+        try:
+            for value, how in self._sources_in(owner).get(name, ()):
+                if how == VALUE:
+                    found |= self._flow(value, depth)
+                elif how == ELEMENT:
+                    found |= self._element_flow(value, depth)
+                elif how == ENTERED:
+                    items = self._flow(value, depth)
+                    found |= items | {("meth", _item_key("__enter__", i)) for i in items}
+            for value, _ in self._contents_in(owner)[0].get(name, ()):
+                found |= self._flow(value, depth)
+            if isinstance(owner, (*FUNC_NODES, ast.Lambda)):
+                # ``def f(obj=Impl())``: the default, made where the ``def`` runs.
+                args = owner.args
+                positional = [*args.posonlyargs, *args.args]
+                tail = positional[len(positional) - len(args.defaults) :]
+                defaults = [
+                    *zip(tail, args.defaults, strict=True),
+                    *(
+                        (a, d)
+                        for a, d in zip(args.kwonlyargs, args.kw_defaults, strict=True)
+                        if d is not None
+                    ),
+                ]
+                for arg, default in defaults:
+                    if arg.arg == name:
+                        found |= self._flow(default, depth)
+        finally:
+            self._flow_active.discard(key)
+        if self._flow_cut == cut:
+            self._flow_memo[key] = (owner, frozenset(found))
+        return found
+
+    def _contents_in(self, owner: ast.AST) -> tuple[dict, dict[str, int]]:
+        kept = self._content_maps.get(id(owner))
+        if kept is None or kept[0] is not owner:
+            kept = self._content_maps[id(owner)] = (owner, name_contents(owner))
+        return kept[1]
+
+    def _symbol_items(self, parts: list[str]) -> set[tuple[str, str]]:
+        """The item a chain naming an in-scope symbol is: a class, a
+        module variable, a function or method."""
+        node = self.indexer.resolve_chain(parts, self.scope)
+        if not isinstance(node, Resolved) or node.detail:
+            return set()
+        symbol = self.indexer.index.symbols.get(node.symbol)
+        if symbol is None:
+            return set()
+        if symbol.kind == SymbolKind.CLASS:
+            return {("class", symbol.id)}
+        if symbol.kind == SymbolKind.VARIABLE:
+            return {("var", symbol.id)}
+        if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
+            return {("fn", symbol.id)}
+        return set()
+
+    def _attribute_flow(self, expr: ast.Attribute, depth: int) -> set[tuple[str, str]]:
+        scope = self.scope
+        if self._is_self(expr.value):
+            if expr.attr == "__class__" and not scope.self_is_class:
+                return {("family", scope.self_class or "")}
+            if expr.attr == "__dict__":
+                return {("get", _item_key("*", ("family", scope.self_class or "")))}
+            return {("attr", f"{scope.self_class}.{expr.attr}")}
+        if expr.attr == "__dict__":
+            return {("get", _item_key("*", i)) for i in self._flow(expr.value, depth)}
+        parts = _flatten_chain(expr)
+        if parts is not None and not self._is_local(parts[0]):
+            items = self._symbol_items(parts)
+            if items:
+                return items
+        return {("get", _item_key(expr.attr, i)) for i in self._flow(expr.value, depth)}
+
+    def _call_flow(self, expr: ast.Call, depth: int) -> set[tuple[str, str]]:
+        scope = self.scope
+        made = self._made_instance(expr)
+        if made is not None:
+            how, cls = made
+            if cls not in self.indexer.class_scopes:
+                return {("result", _item_key("", ("var", cls)))}  # ``Legacy()``
+            func = _flatten_chain(expr.func)
+            plain = (
+                how == "call"
+                and func is not None
+                and func[0] != scope.self_name
+                and not self._is_local(func[0])
+            )
+            return {("class" if plain else "family", cls)}
+        args = [*expr.args, *(k.value for k in expr.keywords)]
+        parts = _flatten_chain(expr.func)
+        if parts is not None and len(parts) == 1 and not self._is_shadowed(parts[0]):
+            builtin = parts[0]
+            if builtin in _PASS_THROUGH:
+                return {i for a in args for i in self._flow(a, depth)}
+            if builtin in ("iter", "next", "enumerate", "zip", "filter", "map", "reversed"):
+                return {i for a in args for i in self._element_flow(a, depth)}
+            if builtin == "getattr" and len(expr.args) >= 2:
+                names = self._flow_strings(expr.args[1]) or ("*",)
+                base = self._flow(expr.args[0], depth)
+                found = {("get", _item_key(n, i)) for n in names for i in base}
+                for default in expr.args[2:3]:
+                    found |= self._flow(default, depth)
+                return found
+            if builtin == "vars" and expr.args:
+                return {("get", _item_key("*", i)) for i in self._flow(expr.args[0], depth)}
+            return set()  # ``str(x)``, ``len(x)``: nothing of what they are handed
+        if parts is not None and not self._is_local(parts[0]):
+            if self._only(parts, _COPIES):
+                return {i for a in args for i in self._flow(a, depth)}
+            items = self._symbol_items(parts)
+            if items:
+                return {
+                    ("factory", i)
+                    if k == "fn"
+                    else (k, i)
+                    if k == "class"
+                    else ("result", _item_key("", (k, i)))
+                    for k, i in items
+                }
+        func = expr.func
+        if isinstance(func, ast.Attribute):
+            if parts is not None and parts[0] == scope.self_name and len(parts) == 2:
+                base = {("family", scope.self_class or "")} if scope.self_class else set()
+            else:
+                base = self._flow(func.value, depth)
+            return {("meth", _item_key(func.attr, i)) for i in base}
+        return {("result", _item_key("", i)) for i in self._flow(func, depth)}
+
+    def _fresh_value(self, expr: ast.expr | None) -> bool:
+        """Whether ``expr`` makes an object no other code holds yet: a
+        literal, a display, a comprehension, a new container (``dict()``,
+        ``defaultdict(list)``) or an in-scope class's instance."""
+        if expr is None:
+            return False
+        if isinstance(expr, (ast.Constant, ast.JoinedStr, ast.List, ast.Tuple, ast.Set, ast.Dict)):
+            return True
+        if isinstance(expr, _COMPREHENSIONS):
+            return True
+        if not isinstance(expr, ast.Call):
+            return False
+        made = self._made_instance(expr)
+        if made is not None:
+            return made[1] in self.indexer.class_scopes
+        parts = _flatten_chain(expr.func)
+        if parts is None or self._is_local(parts[0]):
+            return False
+        if len(parts) == 1 and not self._is_shadowed(parts[0]):
+            return parts[0] in _FRESH_CONTAINERS
+        return self._only(parts, _FRESH_FACTORIES)
+
+    def _fresh_local(self, name: str) -> bool:
+        """Every binding of the local ``name`` makes a fresh object: what is
+        stored into it is then reached only through the name."""
+        owner = self._binding_scope(name)
+        if owner is None:
+            return False
+        values = [v for v, how in self._sources_in(owner).get(name, ()) if how == VALUE]
+        counts = self._contents_in(owner)[1]
+        return (
+            bool(values)
+            and len(values) == counts.get(name, 0)
+            and all(self._fresh_value(v) for v in values)
+        )
+
+    def _flow_bind(
+        self, target: ast.expr, value: ast.expr | None, items: set[tuple[str, str]] | None = None
+    ) -> None:
+        """A binding of ``target`` to what ``value`` gives (``items``, when
+        not the value itself: an element, what ``with`` enters): what a
+        holder may hold (``holds``), and whether the binding is a fresh
+        object (``holder_binds``). A holder is an attribute bound on
+        ``self``/``cls``, in a class body or on an in-scope class, or a
+        module variable; a local name is traced where it is used
+        (``_local_flow``). An attribute bound on any other object is handed
+        on; so is a class body's ``params`` (ASV hands each of its values to
+        the benchmark's methods); a subscript store is ``_flow_store``'s."""
+        if isinstance(target, (ast.Tuple, ast.List)):
+            if (
+                items is None
+                and isinstance(value, (ast.Tuple, ast.List))
+                and len(value.elts) == len(target.elts)
+                and not any(isinstance(e, ast.Starred) for e in (*target.elts, *value.elts))
+            ):
+                for t, v in zip(target.elts, value.elts, strict=True):
+                    self._flow_bind(t, v)
+                return
+            whole = (
+                items
+                if items is not None
+                else (self._element_flow(value, 0) if value is not None else set())
+            )
+            for elt in target.elts:
+                self._flow_bind(elt, None, whole)
             return
-        factory = self._argument_source(expr)
-        if factory is not None:
-            self.indexer.out.handed_instances.add(("factory", factory))
+        if isinstance(target, ast.Starred):
+            self._flow_bind(target.value, value, items)
+            return
+        scope = self.scope
+        class_body = scope.class_level and self.source in self.indexer.class_scopes
+        if isinstance(target, ast.Name) and not class_body and self._flow_local_target(target):
+            return  # a local: traced where it is used
+        fresh = items is None and self._fresh_value(value)
+        if items is None:
+            items = self._flow(value) if value is not None else set()
+        if isinstance(target, ast.Name):
+            if class_body:
+                self._holder("attr", f"{self.source}.{target.id}", items, fresh)
+                if target.id == "params":
+                    self._hand_on_items(items)
+                return
+            symbol = self._symbol_items([target.id])
+            for kind, ident in symbol:
+                if kind == "var":
+                    self._holder("var", ident, items, fresh)
+            return
+        if isinstance(target, ast.Attribute):
+            if self._is_self(target.value):
+                self._holder("attr", f"{scope.self_class}.{target.attr}", items, fresh)
+                return
+            chain = _flatten_chain(target.value)
+            if chain is not None and not self._is_local(chain[0]):
+                for kind, ident in self._symbol_items(chain):
+                    if kind == "class":
+                        self._holder("attr", f"{ident}.{target.attr}", items, fresh)
+            # ``handler.stream = W()``: stored on an object other code
+            # holds, which may call any method of it by name.
+            self._hand_on_items(items)
+            return
+        if isinstance(target, ast.Subscript):
+            self._flow_store(target.value, items)
+
+    def _holder(self, kind: str, ident: str, items: set[tuple[str, str]], fresh: bool) -> None:
+        out = self.indexer.out
+        out.holder_binds.add((kind, ident, "fresh" if fresh else "shared"))
+        for item in items:
+            out.holds.add((kind, ident, *item))
+
+    def _flow_store(self, base: ast.expr, items: set[tuple[str, str]]) -> None:
+        """``base[k] = v`` (``items``: what ``v`` may be) and the like: what
+        is stored into the object ``base`` holds. Reached through a local
+        that only ever holds a fresh object (``_fresh_local``), or through
+        a holder (``holder_stores``: the holder's own unless some binding
+        of it is not fresh); handed on when the object may be one other
+        code holds (a parameter, a call's result, anything else)."""
+        if not items:
+            return
+        out = self.indexer.out
+        if isinstance(base, ast.Name) and base.id != self.scope.self_name:
+            if self._is_local(base.id):
+                if not self._fresh_local(base.id):
+                    self._hand_on_items(items)
+                return
+            for kind, ident in self._symbol_items([base.id]):
+                if kind == "var":
+                    out.holder_stores.update(("var", ident, *i) for i in items)
+                    return
+        elif isinstance(base, ast.Attribute) and self._is_self(base.value):
+            ident = f"{self.scope.self_class}.{base.attr}"
+            out.holder_stores.update(("attr", ident, *i) for i in items)
+            return
+        elif isinstance(base, ast.Attribute):
+            chain = _flatten_chain(base)
+            if chain is not None and not self._is_local(chain[0]):
+                for kind, ident in self._symbol_items(chain):
+                    if kind == "var":
+                        out.holder_stores.update(("var", ident, *i) for i in items)
+                        return
+        self._hand_on_items(items)
+
+    def _flow_return(self, value: ast.expr | None, *, element: bool = False) -> None:
+        """What a function returns or yields (``ret`` holder; ``element``:
+        each item ``yield from`` yields), read by whoever calls it; a nested
+        function's is handed on (its callers are any)."""
+        if value is None:
+            return
+        items = self._element_flow(value, 0) if element else self._flow(value)
+        if not items:
+            return
+        scope = self.scope
+        symbol = self.indexer.index.symbols.get(self.source)
+        if (
+            scope.literal_parent is None
+            and isinstance(scope.literal_node, FUNC_NODES)
+            and symbol is not None
+            and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
+        ):
+            self.indexer.out.holds.update(("ret", self.source, *i) for i in items)
+        else:
+            self._hand_on_items(items)
 
     def _mark_type_node(self, node: ast.expr) -> None:
         self._type_nodes.add(id(node))
@@ -4654,6 +5129,30 @@ def _doctest_source(text: str) -> str:
 # string arguments.
 ATTRIBUTE_GETTERS = frozenset({"operator.attrgetter", "operator.methodcaller"})
 # Calls that take a class as a type, not as a value handed on.
+# What ``_flow`` follows through a call of a builtin (what it gives back
+# holds what it was handed), through a copy, and which calls make an object
+# no other code holds (``_fresh_value``; audit round 9, Y25).
+_PASS_THROUGH = frozenset(
+    {"dict", "frozenset", "list", "max", "min", "set", "sorted", "tuple", "type"}
+)
+_COPIES = frozenset({"copy.copy", "copy.deepcopy"})
+_FRESH_CONTAINERS = frozenset({"bytearray", "dict", "frozenset", "list", "object", "set", "tuple"})
+_FRESH_FACTORIES = frozenset(
+    {
+        "collections.Counter",
+        "collections.OrderedDict",
+        "collections.defaultdict",
+        "collections.deque",
+    }
+)
+
+
+def _item_key(name: str, item: tuple[str, str]) -> str:
+    """The id of a ``get``/``meth``/``result`` item of ``_flow``: the name
+    and the item it is read off (Indexer._escaped_classes splits it)."""
+    return f"{name}\0{item[0]}\0{item[1]}"
+
+
 TYPE_ONLY_CALLS = CASTS | frozenset(
     {"typing.TypeVar", "typing.NewType", "typing.Optional", "typing.Union", "typing.Type"}
 )

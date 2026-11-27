@@ -109,9 +109,13 @@ Supported subset (see internal/design.md):
   reads (keywords, ``__match_args__``);
 * an instance handed to code the analysis does not follow into (a
   library's function, a builtin reading more than dunders, a receiver of
-  unknown type): its class escapes, and referring to it depends on every
-  member (``references._handed_instances``); likewise a module handed on,
-  a literal ``import_module("m")`` result included;
+  unknown type) or to any call: its class escapes, and referring to it
+  depends on every member (``references._handed_instances``); what is
+  handed is traced back through names, containers, attributes, module
+  variables, returns, a fixture's value and what an escaped object holds
+  (``references._flow``, ``Indexer._escaped_classes``; audit round 9,
+  Y25); likewise a module handed on, a literal ``import_module("m")``
+  result included;
 * the ``__init__``/``__new__`` a class's creation runs (an ``enum`` base,
   an in-scope metaclass), and the ``__init_subclass__`` and metaclass hooks
   every class statement and ``type(name, bases, ns)`` runs;

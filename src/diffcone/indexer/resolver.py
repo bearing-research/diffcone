@@ -181,6 +181,26 @@ def _outermost_calls(expr: ast.expr) -> list[ast.Call]:
     return sorted(found, key=lambda c: (c.lineno, c.col_offset))
 
 
+# Decorators whose wrapper gives what the function returns back to its
+# caller only (``Resolver._result_handed_on``; audit round 9, Y25).
+_RESULT_TO_CALLER = frozenset(
+    {
+        *(
+            f"{p}{n}"
+            for p in ("", "builtins.")
+            for n in ("classmethod", "staticmethod", "property")
+        ),
+        "abc.abstractmethod",
+        "contextlib.asynccontextmanager",
+        "contextlib.contextmanager",
+        "functools.cache",
+        "functools.cached_property",
+        "functools.lru_cache",
+        "functools.wraps",
+    }
+)
+
+
 class Resolver(FirstPass):
     """Pass 2: the class model, and references into edges."""
 
@@ -763,6 +783,10 @@ class Resolver(FirstPass):
             return
         # A wrapper may call the function with arguments of its own.
         self.escape(Resolved(symbol_id))
+        if symbol_id in self.class_scopes:
+            # The decorator holds the class: it may read any attribute of it
+            # by name (SourceIndex.escaped_classes; audit round 9, Y25).
+            self.out.handed_instances.add(("class", symbol_id))
         if passive == WRAPPER:
             return
         runners = [module.name] + ([class_scope.id] if class_scope is not None else [])
@@ -899,6 +923,42 @@ class Resolver(FirstPass):
                 symbol = self.index.symbols.get(node.symbol)
                 if symbol is not None and symbol.kind == SymbolKind.CLASS:
                     return True
+        return False
+
+    def _result_handed_on(
+        self, decorators: list[ast.expr], module: ModuleScope, where: Scope
+    ) -> bool:
+        """Whether a decorator may call the function and hand what it returns
+        to code other than the callers the index sees (``@pytest.fixture``,
+        a route, a command, a registry): any but the inert typing ones,
+        ``pytest.mark``, the builtins and ``functools``/``contextlib``
+        wrappers that return the result to the caller
+        (``_RESULT_TO_CALLER``), and a project decorator that returns what it
+        decorates (``passive_decorator`` "same"; references._flow, audit
+        round 9, Y25)."""
+        stars = self._star_bases(module)
+        shadowed = _header_names(where)
+        for dec in decorators:
+            if _is_inert_decorator(dec, module, shadowed, stars):
+                continue
+            target = dec.func if isinstance(dec, ast.Call) else dec
+            names = _canonical_names(target, module, shadowed, stars)
+            if names and all(n in _RESULT_TO_CALLER or n.startswith("pytest.mark.") for n in names):
+                continue
+            parts = _flatten_chain(target)
+            node = self.resolve_chain(parts, where) if parts else None
+            if isinstance(node, Resolved) and not node.detail:
+                symbol = self.index.symbols.get(node.symbol)
+                how = (
+                    None
+                    if symbol is None
+                    else symbol.passive_factory
+                    if isinstance(dec, ast.Call)
+                    else symbol.passive_decorator
+                )
+                if how == SAME:
+                    continue
+            return True
         return False
 
     def _keeps_result(self, decorators: list[ast.expr], module: ModuleScope, where: Scope) -> bool:
@@ -1059,6 +1119,10 @@ class Resolver(FirstPass):
         returned = self._returned_class(node, fscope)
         if returned is not None:
             self.out.returns[symbol_id] = returned
+        if self._result_handed_on(node.decorator_list, scope, header):
+            # ``@pytest.fixture``: pytest calls it and hands what it returns
+            # or yields to the tests (audit round 9, Y25).
+            self.out.handed_instances.add(("factory", symbol_id))
         elif returns_third_party(self, node, fscope):
             self.out.external_returns.add(symbol_id)
         # Function-local imports are visible to the whole body.

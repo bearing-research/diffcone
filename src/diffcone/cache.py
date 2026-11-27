@@ -96,6 +96,9 @@ from diffcone.model import (
 # 76: ... and the mutated_by edges of writers sharing one set of states as one
 #     [states, writers] record (writes_hubs);
 # 77: ... read into an EdgeSet as hubs, edges at a log-callbacks node kept apart;
+# 78: escaped_classes follows what is handed on through names, holders
+#     (attributes, module variables, returns), containers and fixtures
+#     (audit round 9, Y25);
 # 59: a class attribute bound once to a value that cannot change in place
 #     is no root of its class (audit round 6, T24); an instance holds the
 #     arguments its constructor was handed, and only a write that may reach
@@ -154,7 +157,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 77
+INDEX_FORMAT = 78
 
 
 def _indexer_fingerprint() -> str:

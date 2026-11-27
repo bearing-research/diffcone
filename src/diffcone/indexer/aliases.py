@@ -29,7 +29,7 @@ scope; ``del`` binds nothing. Only names with at least one chain are kept.
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 
 from diffcone.indexer.literals import _LocalBindings
 from diffcone.indexer.syntax import FUNC_NODES, _flatten_chain
@@ -300,3 +300,65 @@ def _target_sources(target: ast.expr, value: ast.expr, how: str, out: Sources) -
         else:
             for name in _target_names(target):
                 out.setdefault(name, []).append((value, ELEMENT))
+
+
+def name_contents(scope: ast.AST) -> tuple[Sources, dict[str, int]]:
+    """For what may be handed on through a name (references.py, ``_flow``;
+    audit round 9, Y25): what ``scope`` (a function, a lambda or a
+    comprehension) stores into the object a name of its own holds (``d[k]
+    = v``, ``d.x = v``, ``d[k] += v``, ``d += v``: name -> (value, VALUE)), and how
+    many times it binds each name (every binding: a parameter, an
+    assignment, a loop, ``with``, an import, ``except``, a ``def``), so
+    that a caller can tell whether every binding is one it knows."""
+    stored: Sources = {}
+    counts: dict[str, int] = {}
+    if isinstance(scope, _COMPREHENSIONS):
+        for gen in scope.generators:
+            for name in _target_names(gen.target):
+                counts[name] = counts.get(name, 0) + 1
+        return stored, counts
+    if isinstance(scope, FUNC_NODES + (ast.Lambda,)):
+        for arg in ast.walk(scope.args):
+            if isinstance(arg, ast.arg):
+                counts[arg.arg] = counts.get(arg.arg, 0) + 1
+    skipped: set[int] = set()
+    nodes = list(_own_nodes(scope))
+    for node in nodes:
+        if isinstance(node, ast.comprehension):
+            skipped.update(id(n) for n in ast.walk(node.target))
+        targets: Sequence[ast.expr] = ()
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and node.value is not None:
+            targets, value = (node.target,), node.value
+            if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+                # ``objs += [C()]`` extends what ``objs`` holds.
+                stored.setdefault(node.target.id, []).append((node.value, VALUE))
+        for target in targets:
+            for sub in ast.walk(target):
+                if (
+                    isinstance(sub, (ast.Subscript, ast.Attribute))
+                    and isinstance(sub.ctx, ast.Store)
+                    and isinstance(sub.value, ast.Name)
+                    and value is not None
+                ):
+                    stored.setdefault(sub.value.id, []).append((value, VALUE))
+    for node in nodes:
+        name = None
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            name = None if id(node) in skipped else node.id
+        elif node is not scope and isinstance(node, _SCOPES) and not isinstance(node, ast.Lambda):
+            name = node.name
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name != "*":
+                    bound = alias.asname or alias.name.split(".")[0]
+                    counts[bound] = counts.get(bound, 0) + 1
+        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name:
+            name = node.name
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            name = node.rest
+        if name is not None:
+            counts[name] = counts.get(name, 0) + 1
+    return stored, counts

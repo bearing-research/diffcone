@@ -186,7 +186,14 @@ everything.
     `csv.writer(w)`, `print(file=w)`, `dict(obj)`, `handler.stream = w`),
     a method on an object of unknown type (`items.append(w)`), and your
     own functions. Builtins that only use dunder methods (`len`, `str`,
-    `iter`, `sorted`) don't count.
+    `iter`, `sorted`) don't count. The instance counts as handed on
+    however it gets there: held in a variable first (`obj = Impl();
+    check(obj)`), in a list or dict, on an attribute (`check(self.obj)`),
+    in a module-level variable, returned by a factory, or returned or
+    yielded by a fixture the test receives. So does whatever such an
+    object holds in its attributes. An exception you raise and an
+    `isinstance(obj, Proto)` check written next to where the instance is
+    made don't count.
 
 ## Code a test runs from text or in another process
 

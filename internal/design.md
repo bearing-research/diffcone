@@ -2852,12 +2852,44 @@ w)`, `csv.writer(w)`, `logging.StreamHandler(w)`, `shutil.copyfileobj(r,
 (`items.append(C())`), a class with no in-scope constructor, an
 attribute store on an object other than `self` (`handler.stream = W()`).
 Such code calls plain-named methods on what it is handed, so the class
-(of `C()`, `C` itself, a local bound once to one, or a factory's result)
 joins `escaped_classes` as a call site's argument does
 (`references._handed_instances`; `SourceIndex.escaped_classes` is the
 union). A builtin reading only dunders (`len`, `str`, `iter`, `sorted`,
 `isinstance`) and a class in a type position (`cast(C, x)`,
 `TypeVar(bound=C)`) hand nothing on.
+
+What an argument may be is traced back (audit round 9, Y25;
+`references._flow`, joined in `Indexer._escaped_classes`): `C()` or `C`
+itself (`self`, `cls()` and `type(self)()` stand for the class or any
+in-scope subclass), a factory's result (what any `return` or `yield` of
+it gives), and, through conditions, `and`/`or`, operators, displays,
+comprehensions, subscripts, lambdas and the builtins that give back what
+they are handed (`list(x)`, `sorted(x)`, `next(it)`, `getattr(x, "n")`):
+a local name (every binding of it, a loop's element, what `with` enters,
+a parameter's default, and what is stored into its object), an attribute
+of `self` or of a class (what any method of the class's MRO or its
+subclasses binds there, the class body's binding, a property's value),
+an attribute or method result of another such value (`h.obj`,
+`h.get()`, read off the classes that value may be), and a module
+variable (each binding of it). Handed on, besides every call's
+arguments: what a fixture (or any function a decorator other than the
+builtin, `functools`, `contextlib` and passive ones may call) returns or
+yields, what a function used as a value returns, a nested function's
+returns, a value stored on an object other than `self` (`handler.stream
+= W()`) or into an object other code may hold (`d[k] = v` for a
+parameter `d`, or into `self.reg` bound to a parameter), a class body's
+`params` (ASV hands each to the benchmark's methods), a class a
+decorator receives, and the variables of a module handed on. Once a
+class escapes, so does everything its instances and the class hold
+(any attribute its MRO binds) and whatever its methods return. Not
+followed: an exception raised (`raise E()`, read by `except` or pytest),
+an instance a library call makes, a method found by a name only known
+at run time (`getattr(o, name)`, taken for a bound method nothing calls),
+and `isinstance(x, P)` against a
+`runtime_checkable` protocol written where the instance is made
+(`isinstance` is taken to read dunders only). A mutator call stores
+through a receiver of unknown type (`items.append(x)`), which hands `x`
+on already.
 
 Names in strings the standard library reads off an object are read by
 name (R18): `operator.attrgetter("a.b")` and `methodcaller("m")` record a

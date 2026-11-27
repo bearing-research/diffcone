@@ -252,13 +252,16 @@ Seeding static planning with the change instead selected, through its
 name matches, tests that never held one (a test fake's `read` matched to
 every `.read()`). A definition or body change of an existing member needs
 none of this: the lookup found it at C, and a test that called it ran it.
-Cost: an added or deleted member of a class handed on anywhere (passed as
-`C()` or `C` in a call, or to code the analysis does not follow) selects
-every test that built one or ran a method of its hierarchy, whether or
-not the instance reached such a lookup (`call(Ops(), "a")`, bound to `a`,
-included). Not covered: an instance held in a name or returned by a
-fixture before it is passed on is not an escaped class (static planning
-selects those through the class's structural change).
+An instance counts as handed on however it reaches the call (audit round
+9, Y25): held in a name first (`obj = Impl(); closable(obj)`), in a
+container, on an attribute (`closable(self.obj)`, `closable(h.obj)`), in a
+module variable, returned by a factory or yielded by a fixture the test
+receives, or handed to a parameter that is handed on in turn (see
+design.md, "Attributes read off an object"). Cost: an added or deleted
+member of a class handed on anywhere (in a call, to code the analysis
+does not follow, as a fixture's value) selects every test that built one
+or ran a method of its hierarchy, whether or not the instance reached
+such a lookup (`call(Ops(), "a")`, bound to `a`, included).
 
 **Declared dependencies** (audit round 9, Y13). An `[[edges]]` entry
 (`from` depends on `to`) adds `from` to `to`'s readers, so a definition

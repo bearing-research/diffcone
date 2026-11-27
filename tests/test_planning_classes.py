@@ -498,3 +498,112 @@ def test_y5_a_base_of_another_module_counts_the_same_whichever_module_resolves_f
     plan = repo.plan(base, head, targets)
     assert selected(plan) == {"tests/test_push.py::test_push", "bench.time_items"}
     assert path_ids(reason(plan, "bench.time_items"))[-2:] == ["pkg.a.C", "pkg.b.D.push"]
+
+
+# --------------------------------------------------------------------------- instances handed on
+# A class whose instance (or the class) is handed to code that may read any
+# attribute of it by name escapes (``SourceIndex.escaped_classes``): code
+# referring to it depends on its members. The instance need not be the
+# call's argument itself (audit round 9, Y25).
+
+Y25_INVOKE = "def invoke(obj, name):\n    return getattr(obj, name)()\n"
+Y25_STATIC_HOLDS = {
+    "name": (
+        "def test_x():\n    obj = Provider()\n    assert invoke(obj, os.environ['NAME']) == 1\n"
+    ),
+    "container": (
+        "def test_x():\n    objs = [Provider()]\n"
+        "    assert invoke(objs[0], os.environ['NAME']) == 1\n"
+    ),
+    "attribute": (
+        "class Holder:\n    def __init__(self):\n        self.obj = Provider()\n\n\n"
+        "def test_x():\n    assert invoke(Holder().obj, os.environ['NAME']) == 1\n"
+    ),
+    "fixture": (
+        "@pytest.fixture\ndef obj():\n    return Provider()\n\n\n"
+        "def test_x(obj):\n    assert invoke(obj, os.environ['NAME']) == 1\n"
+    ),
+    "module": (
+        "OBJ = Provider()\n\n\ndef test_x():\n    assert invoke(OBJ, os.environ['NAME']) == 1\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("hold", list(Y25_STATIC_HOLDS))
+def test_y25_an_instance_held_before_it_is_handed_on_escapes(repo, hold):
+    """``invoke`` reads an attribute named at run time off what it is
+    handed. Handed ``Provider()`` itself, the read reaches ``Provider``'s
+    members; handed the same instance through a name, a container, an
+    attribute, a fixture or a module variable, it reached nothing, and a
+    change to ``action`` selected no test. The benchmark, which never
+    reaches the helper, stays out."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/helper.py": Y25_INVOKE,
+            "pkg/provider.py": "class Provider:\n    def action(self):\n        return 1\n",
+            "pkg/other.py": "def helper():\n    return 1\n",
+            "tests/test_x.py": (
+                "import os\n\nimport pytest\n\nfrom pkg.helper import invoke\n"
+                "from pkg.provider import Provider\n\n\n" + Y25_STATIC_HOLDS[hold]
+            ),
+            "benchmarks/bench_other.py": (
+                "from pkg.other import helper\n\n\n"
+                "class Other:\n    def time_other(self):\n        return helper()\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {"pkg/provider.py": "class Provider:\n    def action(self):\n        return 2\n"}
+    )
+    bench = asv_target("bench_other.Other.time_other", "benchmarks.bench_other.Other.time_other")
+    plan = repo.plan(base, head, [bench], discover_runners=["pytest"])
+    assert not plan.degraded
+    assert selected(plan) == {"tests/test_x.py::test_x"}
+    assert path_ids(reason(plan, "tests/test_x.py::test_x"))[-1] == "pkg.provider.Provider.action"
+
+
+Y25_KEPT = (
+    "from pkg.impl import Impl\n\nOBJ = Impl()\n\n\n"
+    "def make():\n    return Impl()\n\n\n"
+    "class Keeper:\n    def __init__(self):\n        self.obj = Impl()\n"
+    "        self.cache = {}\n\n"
+    "    def run(self):\n        self.cache['k'] = Impl()\n"
+    "        return self.obj.open() + self.cache['k'].open()\n\n\n"
+    "def kept():\n    obj = Impl()\n    d = {}\n    d['k'] = Impl()\n"
+    "    return obj.open() + d['k'].open() + make().open() + OBJ.open()\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("extra", "escaped"),
+    [
+        ("", set()),
+        # Stored into an object a caller holds: handed on.
+        ("def fill(d):\n    d['k'] = Impl()\n", {"pkg.impl.Impl"}),
+        # Into what ``self.reg`` holds, which a caller handed in.
+        (
+            "class Filler:\n    def __init__(self, reg):\n        self.reg = reg\n\n"
+            "    def fill(self):\n        self.reg['k'] = Impl()\n",
+            {"pkg.impl.Impl"},
+        ),
+        # The holder handed on, its attribute with it.
+        ("def leak():\n    print(vars(Keeper()))\n", {"pkg.impl.Impl", "pkg.use.Keeper"}),
+    ],
+    ids=["kept", "parameter-store", "shared-attribute-store", "holder-handed-on"],
+)
+def test_y25_an_instance_kept_to_itself_does_not_escape(repo, extra, escaped):
+    """Made and held but never handed on (its methods called, kept on
+    ``self``, in a fresh local container or one ``self`` made, in a module
+    variable, a factory's result used in place): no class escapes, and
+    static selection stays as it was. A store into an object other code may
+    hold hands the instance on; so does handing on what holds it."""
+    rev = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/impl.py": "class Impl:\n    def open(self):\n        return 1\n",
+            "pkg/use.py": Y25_KEPT + ("\n\n" + extra if extra else ""),
+        }
+    )
+    index = build_index(read_snapshot(repo.path, rev, source_roots=["."]))
+    assert index.escaped_classes == escaped

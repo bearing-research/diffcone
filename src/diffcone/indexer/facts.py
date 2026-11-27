@@ -246,10 +246,22 @@ class _Output:
     # (symbol, path suffix or directory, runner) of each test file a test
     # runner is given (``scripts.test_file``): run whole after pass 2.
     test_runs: set[tuple[str, str, str]] = field(default_factory=set)
-    # (kind, id): a class whose instance or a function whose result is
-    # handed to code the analysis does not follow (``references.py``,
-    # ``_handed_instances``); the classes join ``SourceIndex.escaped_classes``.
+    # (kind, id): what is handed to code that may read any attribute of it
+    # by name (``references.py``, ``_hand_on``): an item of ``_flow`` (a
+    # class or its instance, a function's result, what a holder holds); the
+    # classes it may be join ``SourceIndex.escaped_classes``
+    # (Indexer._escaped_classes; audit round 9, Y25).
     handed_instances: set[tuple[str, str]] = field(default_factory=set)
+    # (holder kind, holder id, item kind, item id): what a holder may hold,
+    # a holder being an attribute of a class's instances or of the class
+    # (``attr``, ``C.x``), a module variable (``var``) or what a function
+    # returns or yields (``ret``); ``holder_stores`` the same for what is
+    # stored into the object a holder holds (``self.d[k] = v``), which is
+    # the holder's own only when every binding of it is a fresh object
+    # (``holder_binds``: (holder kind, holder id, ``fresh`` or ``shared``)).
+    holds: set[tuple[str, str, str, str]] = field(default_factory=set)
+    holder_stores: set[tuple[str, str, str, str]] = field(default_factory=set)
+    holder_binds: set[tuple[str, str, str]] = field(default_factory=set)
     # State reached through what a function returns (references.py,
     # ``_rooted_write``; audit round 6, T7), joined after pass 2
     # (Indexer._result_writes): (function, module variable, class, function
@@ -448,6 +460,9 @@ class _Output:
         self.script_paths |= other.script_paths
         self.test_runs |= other.test_runs
         self.handed_instances |= other.handed_instances
+        self.holds |= other.holds
+        self.holder_stores |= other.holder_stores
+        self.holder_binds |= other.holder_binds
         self.state_returns |= other.state_returns
         self.result_writes |= other.result_writes
         self.whole_returns |= other.whole_returns
@@ -679,6 +694,9 @@ def _output_to_dict(out: _Output) -> dict:
         "script_paths": sorted(list(p) for p in out.script_paths),
         "test_runs": sorted(list(t) for t in out.test_runs),
         "handed_instances": sorted(list(h) for h in out.handed_instances),
+        "holds": sorted(list(h) for h in out.holds),
+        "holder_stores": sorted(list(h) for h in out.holder_stores),
+        "holder_binds": sorted(list(h) for h in out.holder_binds),
         "state_returns": sorted(list(r) for r in out.state_returns),
         "result_writes": sorted(list(w) for w in out.result_writes),
         "whole_returns": sorted(list(r) for r in out.whole_returns),
@@ -795,6 +813,9 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.script_paths = {(a, b) for a, b in data["script_paths"]}
     out.test_runs = {(a, b, c) for a, b, c in data["test_runs"]}
     out.handed_instances = {(a, b) for a, b in data["handed_instances"]}
+    out.holds = {(a, b, c, d) for a, b, c, d in data["holds"]}
+    out.holder_stores = {(a, b, c, d) for a, b, c, d in data["holder_stores"]}
+    out.holder_binds = {(a, b, c) for a, b, c in data["holder_binds"]}
     out.state_returns = {(f, r) for f, r in data["state_returns"]}
     out.result_writes = {(w, c, m) for w, c, m in data["result_writes"]}
     out.whole_returns = {(f, r) for f, r in data["whole_returns"]}

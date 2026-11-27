@@ -101,6 +101,10 @@ class _Reach:
     outside: set[str] = field(default_factory=set)
 
 
+# An attribute read by a name only known at run time (Indexer._escaped_classes).
+VALUES = "<values>"
+
+
 class Indexer(DynamicBounds):
     """Builds a SourceIndex from a snapshot: ``Indexer(snapshot).build()``."""
 
@@ -252,36 +256,199 @@ class Indexer(DynamicBounds):
         self._typed_calls()
         self._definition_typed_calls()
         self._shared_instances()
-        # Classes whose instances (or the class itself) are handed to someone
-        # else: whoever holds one may read any attribute off it by a name
-        # nothing resolves, so holding it depends on its members.
-        returns = self._global.returns
-        self.index.escaped_classes = {
-            cls
-            for sites in self._global.call_sites.values()
-            for site in sites
-            for cls in [
-                *site.positional_classes,
-                *site.keyword_classes.values(),
-                # A factory's class counts as handed on too: every return of
-                # that function yields it, so that is what the callee holds.
-                *(c for f in site.positional_sources if f for c in returns.get(f, ())),
-                *(c for f in site.keyword_sources.values() if f for c in returns.get(f, ())),
-            ]
-            if cls is not None
-        }
-        # Handed to code the analysis does not follow into (a library, a
-        # receiver of unknown type, ``**x``: references._handed_instances).
-        for kind, held in self._global.handed_instances:
-            if kind == "class":
-                self.index.escaped_classes.add(held)
-            else:
-                self.index.escaped_classes.update(returns.get(held, ()))
+        self.index.escaped_classes = self._escaped_classes()
         if cache is not None and (new_facts or new_resolved):
             cache.store(new_facts, new_resolved, fingerprint, list(keys.values()))
         # The same edges, the writes writers share kept once (model.EdgeSet).
         self.index.edges.compact()
         return self.index
+
+    def _escaped_classes(self) -> set[str]:
+        """Classes whose instances (or the class itself) are handed to
+        someone else: whoever holds one may read any attribute off it by a
+        name nothing resolves, so holding it depends on its members
+        (``SourceIndex.escaped_classes``). What is handed on is an item of
+        references._flow (``handed_instances``; audit round 9, Y25): a class
+        made or named there, what a function returns, what a holder holds
+        (an attribute of a class's instances or of the class, a module
+        variable, what a function returns or yields), an attribute, method
+        result or call result of another item; and every argument of a call
+        of an in-scope function (``call_sites``). Handed on too: what a
+        function handed on as a value returns (``escapes``; a decorated
+        function's, recorded by the resolver), the variables of a module
+        handed on, and, once a class escapes, what its instances and the
+        class hold (any attribute of its MRO) and what any method of its
+        MRO returns. Something stored into a holder's object (``self.d[k] =
+        v``) is the holder's when every binding of the holder is a fresh
+        object, and handed on otherwise. Decided over the whole index on
+        every build from facts a cold and a warm build share."""
+        g = self._global
+        scopes, symbols = self.class_scopes, self.index.symbols
+        returns = g.returns
+        holds: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
+        for kind, ident, item_kind, item in g.holds:
+            holds[(kind, ident)].add((item_kind, item))
+        binds: dict[tuple[str, str], set[str]] = defaultdict(set)
+        for kind, ident, how in g.holder_binds:
+            binds[(kind, ident)].add(how)
+        hierarchy: dict[str, list[str]] = {}
+
+        def family(cls: str) -> list[str]:
+            """``cls``'s MRO and in-scope subclasses: what an attribute read
+            on ``self`` in a method of ``cls`` may find."""
+            if cls not in hierarchy:
+                found = [*self._mro(cls), *self._descendants.get(cls, ())] if cls in scopes else []
+                hierarchy[cls] = [c for c in dict.fromkeys(found) if c in scopes]
+            return hierarchy[cls]
+
+        handed: set[tuple[str, str]] = set(g.handed_instances)
+        for kind, ident, item_kind, item in g.holder_stores:
+            if kind == "attr":
+                cls, _, name = ident.rpartition(".")
+                keys = [("attr", f"{c}.{name}") for c in family(cls)]
+            else:
+                keys = [(kind, ident)]
+            hows = set().union(*(binds.get(k, set()) for k in keys))
+            if hows == {"fresh"}:
+                holds[(kind, ident)].add((item_kind, item))
+            else:
+                handed.add((item_kind, item))
+        for sites in g.call_sites.values():
+            for site in sites:
+                for cls in (*site.positional_classes, *site.keyword_classes.values()):
+                    if cls is not None:
+                        handed.add(("class", cls))
+                for f in (*site.positional_sources, *site.keyword_sources.values()):
+                    if f:
+                        handed.add(("factory", f))
+        for f in g.escapes:
+            symbol = symbols.get(f)
+            if symbol is not None and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
+                handed.add(("factory", f))
+        attrs: dict[str, list[str]] = defaultdict(list)
+        modules = self.index.escaped_modules
+        for kind, ident in holds:
+            if kind == "attr":
+                attrs[ident.rpartition(".")[0]].append(ident)
+            elif kind == "var" and ident.rpartition(".")[0] in modules:
+                handed.add(("var", ident))
+
+        def method(cls: str, name: str) -> str | None:
+            symbol = symbols.get(scopes[cls].members.get(name, ""))
+            return symbol.id if symbol is not None and symbol.kind == SymbolKind.METHOD else None
+
+        def dynamic(cls: str) -> set[tuple[str, str]]:
+            """What ``__getattr__``/``__getattribute__`` of ``cls``'s
+            hierarchy gives back for an attribute nothing else binds."""
+            return {
+                ("factory", m)
+                for c in family(cls)
+                for hook in ("__getattr__", "__getattribute__")
+                if (m := method(c, hook)) is not None
+            }
+
+        memo: dict[tuple[str, str], frozenset[tuple[str, str]]] = {}
+        partial: dict[tuple[str, str], frozenset[tuple[str, str]]] = {}
+        active: set[tuple[str, str]] = set()
+        cut = [False]
+
+        def classes(item: tuple[str, str]) -> list[str]:
+            return sorted(i for k, i in reach(item) if k == "class" and i in scopes)
+
+        def expand(item: tuple[str, str]) -> set[tuple[str, str]]:
+            kind, ident = item
+            found: set[tuple[str, str]] = set()
+            if kind == "family":
+                found.update(("class", c) for c in (ident, *self._descendants.get(ident, ())))
+            elif kind == "factory":
+                found.update(("class", c) for c in returns.get(ident, ()))
+                found |= holds.get(("ret", ident), set())
+            elif kind == "var":
+                found |= holds.get(("var", ident), set())
+            elif kind == "attr":
+                cls, _, name = ident.rpartition(".")
+                if name == VALUES:
+                    # An attribute read by a name only known at run time
+                    # (``getattr(o, name)``, ``vars(o)``): what any attribute
+                    # binds, or ``__getattr__`` gives back. A method found
+                    # so is a bound method, not taken to be called.
+                    for c in self._mro(cls) if cls in scopes else ():
+                        for held in attrs.get(c, ()):
+                            found |= holds[("attr", held)]
+                    found.update(dynamic(cls))
+                elif name == "*":
+                    # Everything an instance of ``cls`` or the class holds,
+                    # and what any of its methods gives back.
+                    for c in self._mro(cls) if cls in scopes else ():
+                        for held in attrs.get(c, ()):
+                            found |= holds[("attr", held)]
+                        for member in scopes[c].members.values():
+                            if (m := symbols.get(member)) is not None and (
+                                m.kind == SymbolKind.METHOD
+                            ):
+                                found.add(("factory", m.id))
+                else:
+                    for c in family(cls):
+                        found |= holds.get(("attr", f"{c}.{name}"), set())
+                        if (m := method(c, name)) is not None:
+                            found.add(("fn", m))  # a bound method, or a property's value
+                            found.add(("factory", m))
+                    found.update(dynamic(cls))
+            elif kind in ("get", "meth", "result"):
+                name, _, rest = ident.partition("\0")
+                sub_kind, _, sub = rest.partition("\0")
+                if kind == "result":
+                    for k, i in reach((sub_kind, sub)):
+                        if k in ("class", "family"):
+                            found.add((k, i))
+                        elif k == "fn":
+                            found.add(("factory", i))
+                else:
+                    for cls in classes((sub_kind, sub)):
+                        if kind == "get":
+                            found.add(("attr", f"{cls}.{VALUES if name == '*' else name}"))
+                        else:
+                            for c in family(cls):
+                                if (m := method(c, name)) is not None:
+                                    found.add(("factory", m))
+            return found
+
+        def reach(start: tuple[str, str]) -> frozenset[tuple[str, str]]:
+            if start in memo:
+                return memo[start]
+            if start in active:
+                cut[0] = True
+                return partial.get(start, frozenset({start}))
+            active.add(start)
+            seen = {start}
+            todo = [start]
+            while todo:
+                for nxt in expand(todo.pop()):
+                    if nxt not in seen:
+                        seen.add(nxt)
+                        todo.append(nxt)
+            active.discard(start)
+            memo[start] = frozenset(seen)
+            return memo[start]
+
+        while True:
+            escaped: set[str] = set()
+            done: set[tuple[str, str]] = set()
+            todo = sorted(handed)
+            while todo:
+                for kind, ident in reach(todo.pop()):
+                    if (kind, ident) in done:
+                        continue
+                    done.add((kind, ident))
+                    if kind == "class" and ident in scopes and ident not in escaped:
+                        escaped.add(ident)
+                        todo.append(("attr", f"{ident}.*"))
+                    elif kind == "fn":
+                        todo.append(("factory", ident))
+            if not cut[0] or memo == partial:
+                return escaped
+            # A trace met itself (``V = V.next``): again, from what it found.
+            partial, memo, cut[0] = dict(memo), {}, False
 
     def _definition_writes(self) -> None:
         """Give what a function's definition-time code writes (its

@@ -7291,6 +7291,73 @@ def test_y15_a_member_of_a_class_handed_to_other_code(repo, use, edit):
     assert selected(plan) == set()
 
 
+_Y25_HEAD = "import pytest\n\nfrom pkg.check import closable\nfrom pkg.impl import Impl\n\n\n"
+# Ways an instance reaches ``closable`` other than as the call's argument
+# itself: each test asserts that ``Impl`` has no ``close``.
+Y25_HOLDS = {
+    "name": "def test_check():\n    obj = Impl()\n    assert not closable(obj)\n",
+    "fixture": "@pytest.fixture\ndef obj():\n    return Impl()\n\n\n"
+    "def test_check(obj):\n    assert not closable(obj)\n",
+    "yield_fixture": "@pytest.fixture\ndef obj():\n    yield Impl()\n\n\n"
+    "def test_check(obj):\n    assert not closable(obj)\n",
+    "attribute": "class Holder:\n    def __init__(self):\n        self.obj = Impl()\n\n\n"
+    "def test_check():\n    assert not closable(Holder().obj)\n",
+    "container": "def test_check():\n    objs = [Impl()]\n    assert not closable(objs[0])\n",
+    "stored": "def test_check():\n    d = {}\n    d['k'] = Impl()\n"
+    "    assert not closable(d['k'])\n",
+    "factory": "def make():\n    obj = Impl()\n    return obj\n\n\n"
+    "def test_check():\n    assert not closable(make())\n",
+    "module": "OBJ = Impl()\n\n\ndef test_check():\n    assert not closable(OBJ)\n",
+    "parameter": "def check(obj):\n    return closable(obj)\n\n\n"
+    "def test_check():\n    obj = Impl()\n    assert not check(obj)\n",
+}
+
+
+@pytest.mark.parametrize("edit", ["added", "deleted"])
+@pytest.mark.parametrize("hold", list(Y25_HOLDS))
+def test_y25_a_member_of_a_class_whose_instance_is_held_then_handed_on(repo, hold, edit):
+    """The rest of Y15: the instance reaches the library code not as the
+    call's argument itself but through a name, a fixture's value, an
+    attribute, a container, a factory's return, a module variable or a
+    parameter handed on. Its class escapes all the same
+    (``escaped_classes``), so adding or deleting ``close`` reaches the
+    test; ``Other``, which nothing hands on, still reaches nothing."""
+    impl = Y15_IMPL
+    with_member, without = impl + Y15_MEMBERS["protocol"], impl
+    before, after = (without, with_member) if edit == "added" else (with_member, without)
+    check = _Y25_HEAD + Y25_HOLDS[hold]
+    if edit == "deleted":
+        check = check.replace("assert not ", "assert ")
+    base = repo.commit(
+        {
+            **BENCH_PKG,
+            "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+            "pkg/check.py": Y15_PROTOCOL,
+            "pkg/impl.py": before,
+            "pkg/other.py": "class Other:\n    def ping(self):\n        return 1\n",
+            "tests/test_check.py": check,
+            "tests/test_open.py": "from pkg.other import Other\n\n\n"
+            "def test_open():\n    obj = Other()\n    assert obj.ping() == 1\n",
+        }
+    )
+    evidence = repo.collect()
+    head = repo.commit({"pkg/impl.py": after})
+    plan = _noop_plan(repo, base, head, evidence)
+    assert selected(plan) == {"tests/test_check.py::test_check"}
+    # Top-level code holding one (``OBJ = Impl()``) escalates its module.
+    expected = "escalated" if hold == "module" else "executed_reader"
+    assert rules(plan, "tests/test_check.py::test_check") == {expected}
+    head = repo.commit(
+        {
+            "pkg/impl.py": before,
+            "pkg/other.py": "class Other:\n    def ping(self):\n        return 1\n\n"
+            "    def close(self):\n        pass\n",
+        }
+    )
+    plan = _noop_plan(repo, base, head, evidence)
+    assert selected(plan) == set()
+
+
 # What a function's decorators, defaults and annotations write is written
 # when the ``def`` runs, at import, not when a test calls the function:
 # ``@app.command()`` puts ``main`` into ``app``, and a test running ``main``
