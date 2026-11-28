@@ -1587,6 +1587,54 @@ boltons 2 659 of 2 659, flask 1 885 of 2 232, jinja 2 708 of 4 062,
 marshmallow 1 942 of 3 879, more-itertools 1 398 of 4 628, pluggy 1 095 of
 1 095, typer 6 006 of 6 006).
 
+## Before 0.7.0: audit round 9 (2026-11-27)
+
+Measured on v0.6.1 and on the round's main with Y25 (3adfd3d); the
+fixture and collection checks and the strata recordings on 69ab2d5 (the
+round's fixes before Y25), on a 32-vCPU pod. Workspace: the 07afdbfd
+`.spike/r9-validate` (`results.tgz`: census JSONs, `census-compare.txt`,
+`checks-table.txt`, `evcorpus-table.txt`, `corpus/`, the strata plans;
+`corpus3.tgz`: the rerun below and tox's log).
+
+**strata** (edc32ce0 -> 1241020210, recorded again at store format 8 with
+69ab2d5, 6 225 tests, Python 3.13 and 3.14): 6 231 of 6 231 on both,
+because the pair changes a pytest hook (as before); 3 fallbacks, no
+analysis error. Reasons on 3.13 / 3.14: `executed_reader` 744 / 737,
+`lookup_site` 62 / 66, `subprocess` 61 / 70, `text_code` 49 / 53,
+`no_evidence` 20 / 19, `touched_file` 10 / 11, `test_scope` 10 / 10.
+
+**Census** (42 repositories, 336 plans): v0.6.1 and 3adfd3d select the
+same tests in every repository, 348 924 of 355 339 (96.7 %). Y25's wider
+escaped classes (diffcone's own index: 71 -> 124 of 149) moved no count.
+
+**Fixture and collection checks** (69ab2d5, 43 repositories, pandas
+included): 0 missed fixtures; where discovery finds fewer tests than
+pytest collects (itsdangerous, alembic, scrapy, pygments) the gap carries
+notes, as before.
+
+**Corpus** (`diffcone corpus --coverage`, 3adfd3d): 40 repositories, 166
+pairs, 449 outcome changes, 0 missed, coverage recall 100 % wherever it is
+defined (alembic's 6 outcome changes and pytest-asyncio's 48 coverage hits
+are outside the target list, discovery incomplete, the plan exits 3).
+`--max 6` counts commits changing no `.py` file, so marshmallow,
+pre-commit, pydantic, pytest-asyncio, requests, tenacity and tox had
+nothing to validate in that window; they were rerun over their last six
+Python-changing first-parent commits. Not measured: anyio (2-hour limit,
+4 pairs validated), pydantic (50-minute limit), tox (every pair stopped
+with pytest's internal error at its base: Y26, fixed afterwards in the
+selection plugin).
+
+**Evidence corpus** (8 suites, recorded and replayed with 3adfd3d): 0
+misses everywhere; selections as at the last baseline (arrow 2 852 of
+4 170, boltons 2 659 of 2 659, flask 1 885 of 2 232, jinja 2 708 of
+4 062, marshmallow 1 942 of 3 879, more-itertools 1 398 of 4 628); pluggy
+1 103 of 1 103 and typer 6 008 of 6 008 (1 095 and 6 006 before: the
+suites gained tests).
+
+**pandas** (recorded with 3adfd3d, `-n 24`, 25 374 tests in 841 s): one
+test started a subprocess (a `python -c` importing pandas), none flagged
+ninja: meson-python's editable loader no longer flags a test (Y10).
+
 ## Before 0.6.0: audit round 8 (2026-11-16)
 
 Measured on v0.5.0 (3256a04), round 7's end (bdcc8a0, which plans as

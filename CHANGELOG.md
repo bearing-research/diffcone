@@ -152,6 +152,9 @@ selection rules.
   selection plugin never loaded), even when other tests failed. Its `-o`
   plan records them under `run`, and `diffcone report` counts them
   whatever the exit code.
+- `diffcone validate` and `diffcone corpus` no longer stop with pytest's
+  internal error (exit `3`) when a test patches `os.path` functions such
+  as `relpath` while it runs.
 
 ### CI
 

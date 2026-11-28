@@ -2088,6 +2088,46 @@ def test_r5_validate_sees_outcomes_whatever_the_projects_verbosity(repo, capsys)
     assert changed == {"tests/test_ops.py::test_add"}
 
 
+PATCHED_PATHS = {
+    **CALC,
+    "tests/test_ops.py": (
+        "import os\nfrom unittest import mock\n\nimport pytest\n\nfrom calc.ops import add\n\n\n"
+        "def _broken(*args, **kwargs):\n    raise ValueError('different drives')\n\n\n"
+        "@pytest.fixture\ndef no_paths(monkeypatch):\n"
+        "    for name in ('relpath', 'abspath', 'realpath', 'join'):\n"
+        "        monkeypatch.setattr(os.path, name, _broken)\n"
+        "    monkeypatch.setattr(os, 'getcwd', _broken)\n\n\n"
+        "def test_no_paths(no_paths):\n    assert isinstance(add(1, 2), int)\n\n\n"
+        "@mock.patch('os.path.relpath', side_effect=ValueError('different drives'))\n"
+        "def test_patched(relpath):\n    assert isinstance(add(2, 2), int)\n\n\n"
+        "def test_add():\n    assert add(1, 2) == 3\n"
+    ),
+}
+
+
+def test_y26_outcomes_are_read_whatever_a_test_patches_in_os_path(repo):
+    """A test's patches are still in force when pytest reports its outcome
+    (they are undone at teardown): the selection plugin made the report's
+    node id repository-relative with ``os.path`` then, called the test's
+    stand-in, and pytest stopped with an internal error (tox's suite patches
+    ``os.path.relpath`` to raise). The ids are worked out after collection,
+    before any test runs. (The patched tests pass at both snapshots: pytest
+    itself formats a failure with ``os.path``.)"""
+    from diffcone.execution import validate_pytest
+
+    base = repo.commit(PATCHED_PATHS)
+    head = repo.commit({"calc/ops.py": CALC["calc/ops.py"].replace("a + b", "a + b + 1")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    result = validate_pytest(plan, repo=repo.path, command=PYTEST_NO_CACHE)
+    assert {o.runner_id for o in result.outcomes} >= {
+        "tests/test_ops.py::test_no_paths",
+        "tests/test_ops.py::test_patched",
+    }
+    changed = {o.runner_id for o in result.outcomes if o.changed}
+    assert changed == {"tests/test_ops.py::test_add"}
+    assert result.ok
+
+
 def test_validate_reports_the_command_that_ran_without_the_obsolete_v(repo):
     from diffcone.execution import validate_pytest
 

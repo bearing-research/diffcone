@@ -66,6 +66,13 @@ ROOTS = tuple(dict.fromkeys([os.path.realpath(_ROOT), os.path.abspath(_ROOT)]))
 skipped: list[str] = []  # repository-relative paths of collectors that skipped
 _outcomes = None  # this process's outcomes file, once a report came in
 _outcomes_pid = 0  # the process that opened it (a fork must open its own)
+# Each collected test's node id -> its id relative to the repository, made
+# once collection finished. A test's patches are still in force when its
+# outcome is reported (they are undone at teardown): working the id out then
+# would call whatever the test put in place of ``os.path.relpath``,
+# ``os.getcwd`` or ``open`` (tox's suite patches ``relpath`` to raise).
+_repository_ids: dict[str, str] = {}
+_getpid = os.getpid
 _rootpath = os.getcwd()  # pytest's rootdir, which its node ids are relative to
 
 
@@ -178,8 +185,28 @@ def pytest_collection_modifyitems(session, config, items):
         )
 
 
-def pytest_runtest_logreport(report):
+def _outcomes_file(directory: str):
+    """This process's outcomes file, opened on first use (a fork opens its own)."""
     global _outcomes, _outcomes_pid
+    if _outcomes is None or _outcomes_pid != _getpid():
+        path = os.path.join(directory, f"outcomes-{_getpid()}")
+        _outcomes = open(path, "a", encoding="utf-8", buffering=1)
+        _outcomes_pid = _getpid()
+    return _outcomes
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_finish(session):
+    # After every test is collected and before the first runs (see
+    # ``_repository_ids``).
+    if not OUTCOMES:
+        return
+    for item in session.items:
+        _repository_ids[item.nodeid] = _repository_nodeid(item.nodeid)
+    _outcomes_file(OUTCOMES)
+
+
+def pytest_runtest_logreport(report):
     if not OUTCOMES:
         return
     outcome = None
@@ -194,11 +221,10 @@ def pytest_runtest_logreport(report):
     elif report.when == "setup" and report.skipped:
         outcome = "XFAIL" if xfail else "SKIPPED"
     if outcome is not None:
-        if _outcomes is None or _outcomes_pid != os.getpid():
-            path = os.path.join(OUTCOMES, f"outcomes-{os.getpid()}")
-            _outcomes = open(path, "a", encoding="utf-8", buffering=1)
-            _outcomes_pid = os.getpid()
-        _outcomes.write(f"{_repository_nodeid(report.nodeid)}\t{outcome}\n")
+        nodeid = _repository_ids.get(report.nodeid)
+        if nodeid is None:  # a report for no item of the session's
+            nodeid = _repository_nodeid(report.nodeid)
+        _outcomes_file(OUTCOMES).write(f"{nodeid}\t{outcome}\n")
 
 
 def pytest_sessionfinish(session):

@@ -3265,3 +3265,34 @@ def test_u16_a_functools_cache_over_a_wrapper_is_cleared_before_each_test(repo, 
         "tests/test_z.py::test_z",
         CACHE_BENCH.runner_id,
     }
+
+
+def test_a_fixture_set_up_under_a_test_s_frozen_clock_is_still_credited(repo):
+    """A test whose fixture freezes the clock (freezegun replaces ``time``'s
+    functions) and then sets up a module fixture: the instance's start reads
+    the frozen clock, far later than the test's end, read after teardown
+    from the real one. The test is still credited with what the instance
+    ran, which it traced itself."""
+    lib = "def build():\n    return part()\n\n\ndef part():\n    return {}\n"
+    base = repo.commit(
+        {
+            **IGNORE,
+            "lib/__init__.py": "",
+            "lib/build.py": lib,
+            "tests/__init__.py": "",
+            "tests/conftest.py": (
+                "import time\n\nimport pytest\n\nfrom lib.build import build\n\n\n"
+                "@pytest.fixture\ndef frozen(monkeypatch):\n"
+                "    for name in ('perf_counter_ns', 'monotonic_ns', 'time_ns'):\n"
+                "        monkeypatch.setattr(time, name, lambda: 10**30)\n\n\n"
+                "@pytest.fixture(scope='module')\ndef built():\n    return build()\n\n\n"
+                "@pytest.fixture\ndef uses(frozen, request):\n"
+                "    return request.getfixturevalue('built')\n"
+            ),
+            "tests/test_a.py": "def test_a(uses):\n    assert uses == {}\n",
+        }
+    )
+    evidence = repo.collect()
+    assert "lib.build.part" in executed(evidence, "tests/test_a.py::test_a")
+    head = repo.commit({"lib/build.py": lib.replace("return {}", "return {'x': 1}")})
+    assert selected(_plan(repo, base, head, evidence)) == {"tests/test_a.py::test_a"}
