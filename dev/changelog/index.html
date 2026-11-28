@@ -2097,14 +2097,16 @@ selection rules.</p>
 </ul>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
+<li>The evidence store format is 8: recordings made by earlier versions are
+  refused, so record again after upgrading.</li>
 <li>A recording is used only for a run of the pytest command and arguments
   it was made with. Before, changing a job's pytest arguments made every
   pull request compare tests discovered with the new arguments against a
   recording collected with the old ones: run refused, because the
   recording had collected tests that were not targets. Now <code>run</code>,
   <code>validate</code>, <code>corpus</code>, and <code>plan</code> given <code>--command</code>, skip a recording
-  made with other arguments (<code>--evidence auto</code>) or refuse it (a path), and
-  exit <code>2</code> saying why. The run and record actions then plan without it,
+  made with other arguments (<code>--evidence auto</code>, which exits <code>2</code> saying why
+  when no other recording fits) or refuse it (a path, exit <code>2</code>). The run and record actions then plan without it,
   as for a recording made with other source roots. Options that only
   change what pytest reports or when it stops may differ (<code>-q</code>, <code>-v</code>,
   <code>-x</code>, <code>--maxfail</code>, <code>--tb</code>, <code>-r</code>, <code>--color</code>, <code>--durations</code>,
@@ -2114,9 +2116,7 @@ selection rules.</p>
   thread the test started, work it handed to a <code>ThreadPoolExecutor</code>, and
   <code>asyncio</code>'s <code>run_in_executor</code> or <code>to_thread</code>. Before, a recording put
   such code among the code run outside every test, as for a session hook,
-  so a change to it selected every test. On a loaded machine that
-  depended on timing: one of two recordings of strata at one commit put
-  its cache fetch path there. Work handed off outside every test, such as
+  so a change to it selected every test. Work handed off outside every test, such as
   at import or by a hook, still counts as run outside every test, also
   when a test started the pool's thread; a pool's own worker threads
   (<code>ThreadPoolExecutor</code>, <code>multiprocessing.pool.ThreadPool</code>, anyio and trio
@@ -2130,7 +2130,7 @@ selection rules.</p>
   record, so what one module's setup ran counted for the tests of every
   module, in every worker, including instances set up after them. With an autouse fixture, a process one test left running as
   the next module started (a warm worker pool) made every test of the
-  suite always selected. On strata it did in four recordings of four.</li>
+  suite always selected.</li>
 <li>An evidence plan no longer fails with an internal error (exit <code>2</code>)
   when a change reaches state that hundreds of modules build on one
   another at import. diffcone followed such a chain one module at a time
@@ -2159,8 +2159,7 @@ selection rules.</p>
   mode (<code>sys.flags</code>), and every <code>PYTHONPATH</code> entry except the source roots
   diffcone adds itself. Before, a recording made with a plugin named in
   <code>PYTEST_PLUGINS</code>, or an extra directory of the repository on
-  <code>PYTHONPATH</code>, was used for a run without it. Recordings made by earlier
-  versions are refused: record again.</li>
+  <code>PYTHONPATH</code>, was used for a run without it.</li>
 <li>With a recording, benchmarks and other non-pytest targets keep the plan
   made without it on changes outside the source roots: a changed
   dependency list, lock file, <code>asv.conf.json</code>, C source or <code>[build]</code> table
@@ -2206,6 +2205,9 @@ selection rules.</p>
   selection plugin never loaded), even when other tests failed. Its <code>-o</code>
   plan records them under <code>run</code>, and <code>diffcone report</code> counts them
   whatever the exit code.</li>
+<li><code>diffcone validate</code> and <code>diffcone corpus</code> no longer stop with pytest's
+  internal error (exit <code>3</code>) when a test patches <code>os.path</code> functions such
+  as <code>relpath</code> while it runs.</li>
 </ul>
 <h3 id="ci">CI<a class="headerlink" href="#ci" title="Permanent link">&para;</a></h3>
 <ul>
@@ -2217,7 +2219,7 @@ selection rules.</p>
 </ul>
 <h3 id="performance">Performance<a class="headerlink" href="#performance" title="Permanent link">&para;</a></h3>
 <ul>
-<li>A plan of pandas takes about a third of the time (a commit that selects
+<li>A plan of pandas takes about a fifth of the time (a commit that selects
   every test, on one core, the same plan to the byte): about 3 200 s down
   to about 700 s without a cache (peak 7.9 GB instead of 25 GB), and
   about 150 s with the index cached (peak 5.5 GB instead of 30 GB); a plan
