@@ -1232,7 +1232,14 @@ call any of them by name. That covers a library (<code>json.dump(x, w)</code>,
 <code>csv.writer(w)</code>, <code>print(file=w)</code>, <code>dict(obj)</code>, <code>handler.stream = w</code>),
 a method on an object of unknown type (<code>items.append(w)</code>), and your
 own functions. Builtins that only use dunder methods (<code>len</code>, <code>str</code>,
-<code>iter</code>, <code>sorted</code>) don't count.</dd>
+<code>iter</code>, <code>sorted</code>) don't count. The instance counts as handed on
+however it gets there: held in a variable first (<code>obj = Impl();
+check(obj)</code>), in a list or dict, on an attribute (<code>check(self.obj)</code>),
+in a module-level variable, returned by a factory, or returned or
+yielded by a fixture the test receives. So does whatever such an
+object holds in its attributes. An exception you raise and an
+<code>isinstance(obj, Proto)</code> check written next to where the instance is
+made don't count.</dd>
 </dl>
 <h2 id="code-a-test-runs-from-text-or-in-another-process">Code a test runs from text or in another process<a class="headerlink" href="#code-a-test-runs-from-text-or-in-another-process" title="Permanent link">&para;</a></h2>
 <dl>
