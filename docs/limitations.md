@@ -591,7 +591,8 @@ everything.
       recording;
     - a program your tests start that is named like a read-only system
       query (`git`, `uname`, `ps`, `locale`, `fc-list`) but is a script of
-      yours on `PATH` outside the repository (one inside it is followed):
+      yours on `PATH` outside the repository (one inside it makes the test
+      always selected):
       it is taken for the system program and not followed;
     - tests outside pytest's rootdir: with the rootdir in a subdirectory
       (a `pytest.ini` in `sub/`) and tests both under it and elsewhere

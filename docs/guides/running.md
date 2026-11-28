@@ -24,8 +24,8 @@ kept too.
 `run` exits with pytest's exit code, with two exceptions (see
 [exit codes](../reference/cli.md#exit-codes)):
 
-- if a selected test wasn't collected and pytest otherwise succeeded, it
-  exits `3`, since the run may have skipped tests. So it does when no
+- if a selected test wasn't collected, it exits `3`, even when other
+  tests failed, since the run may have skipped tests. So it does when no
   pytest process loaded diffcone's selection plugin: a wrapper script or a
   tox, nox or make target in `--command` that doesn't pass its arguments
   on to pytest runs something other than the selection;

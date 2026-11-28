@@ -153,7 +153,8 @@ tests depend on:
 
 So `reads` must name every such path your tests' run depends on, not only
 what the build compiles: a `.env` file the tests load, a data submodule
-they read. The text report and `diffcone run` list every path set aside,
+they read. The text and JSON reports list every path set aside and
+`diffcone run` names the first few,
 the JSON report gives them under `build_reads.set_aside`, and
 [`diffcone report`](../ci.md#report-on-recent-runs) lists them per job. A plan that uses a recording
 treats a set-aside file like any other file: it selects the tests that

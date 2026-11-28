@@ -131,6 +131,12 @@ end-to-end suite, go in the same file:
 targets = "tests/e2e/*"
 ```
 
+If every plan selects every test because files outside your source roots
+changed (another component's build files, a workflow), name what your
+tests' build does read under
+[`[build] reads`](../reference/declarations.md#build-files-your-tests-dont-use),
+and the other changes are set aside.
+
 See the [`diffcone.toml` reference](../reference/declarations.md).
 
 ## Speed

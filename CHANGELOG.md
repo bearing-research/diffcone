@@ -43,14 +43,16 @@ selection rules.
 
 ### Execution evidence
 
+- The evidence store format is 8: recordings made by earlier versions are
+  refused, so record again after upgrading.
 - A recording is used only for a run of the pytest command and arguments
   it was made with. Before, changing a job's pytest arguments made every
   pull request compare tests discovered with the new arguments against a
   recording collected with the old ones: run refused, because the
   recording had collected tests that were not targets. Now `run`,
   `validate`, `corpus`, and `plan` given `--command`, skip a recording
-  made with other arguments (`--evidence auto`) or refuse it (a path), and
-  exit `2` saying why. The run and record actions then plan without it,
+  made with other arguments (`--evidence auto`, which exits `2` saying why
+  when no other recording fits) or refuse it (a path, exit `2`). The run and record actions then plan without it,
   as for a recording made with other source roots. Options that only
   change what pytest reports or when it stops may differ (`-q`, `-v`,
   `-x`, `--maxfail`, `--tb`, `-r`, `--color`, `--durations`,
@@ -60,9 +62,7 @@ selection rules.
   thread the test started, work it handed to a `ThreadPoolExecutor`, and
   `asyncio`'s `run_in_executor` or `to_thread`. Before, a recording put
   such code among the code run outside every test, as for a session hook,
-  so a change to it selected every test. On a loaded machine that
-  depended on timing: one of two recordings of strata at one commit put
-  its cache fetch path there. Work handed off outside every test, such as
+  so a change to it selected every test. Work handed off outside every test, such as
   at import or by a hook, still counts as run outside every test, also
   when a test started the pool's thread; a pool's own worker threads
   (`ThreadPoolExecutor`, `multiprocessing.pool.ThreadPool`, anyio and trio
@@ -76,7 +76,7 @@ selection rules.
   record, so what one module's setup ran counted for the tests of every
   module, in every worker, including instances set up after them. With an autouse fixture, a process one test left running as
   the next module started (a warm worker pool) made every test of the
-  suite always selected. On strata it did in four recordings of four.
+  suite always selected.
 - An evidence plan no longer fails with an internal error (exit `2`)
   when a change reaches state that hundreds of modules build on one
   another at import. diffcone followed such a chain one module at a time
@@ -105,8 +105,7 @@ selection rules.
   mode (`sys.flags`), and every `PYTHONPATH` entry except the source roots
   diffcone adds itself. Before, a recording made with a plugin named in
   `PYTEST_PLUGINS`, or an extra directory of the repository on
-  `PYTHONPATH`, was used for a run without it. Recordings made by earlier
-  versions are refused: record again.
+  `PYTHONPATH`, was used for a run without it.
 - With a recording, benchmarks and other non-pytest targets keep the plan
   made without it on changes outside the source roots: a changed
   dependency list, lock file, `asv.conf.json`, C source or `[build]` table
@@ -166,7 +165,7 @@ selection rules.
 
 ### Performance
 
-- A plan of pandas takes about a third of the time (a commit that selects
+- A plan of pandas takes about a fifth of the time (a commit that selects
   every test, on one core, the same plan to the byte): about 3 200 s down
   to about 700 s without a cache (peak 7.9 GB instead of 25 GB), and
   about 150 s with the index cached (peak 5.5 GB instead of 30 GB); a plan
